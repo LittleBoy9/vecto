@@ -48,6 +48,8 @@ interface DocumentActions {
   toggleNodeVisibility: (nodeId: string) => void;
   /** Toggle node lock state. */
   toggleNodeLock: (nodeId: string) => void;
+  /** Update the raw text content of a text/tspan node. */
+  updateNodeRawContent: (nodeId: string, rawContent: string) => void;
   /** Remove nodes by internal ID. */
   deleteNodes: (ids: string[]) => void;
   setFilePath: (path: string) => void;
@@ -94,6 +96,15 @@ export const useDocumentStore = create<DocumentStore>()(
           walkNodes(state.document.nodes, nodeId, (node) => {
             node.locked = !node.locked;
           });
+        }),
+
+      updateNodeRawContent: (nodeId, rawContent) =>
+        set((state) => {
+          if (!state.document) return;
+          walkNodes(state.document.nodes, nodeId, (node) => {
+            node.rawContent = rawContent;
+          });
+          state.isDirty = true;
         }),
 
       deleteNodes: (ids) =>

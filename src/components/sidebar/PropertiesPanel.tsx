@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useDocumentStore } from "../../store/documentStore";
 import { useSelectionStore } from "../../store/selectionStore";
 import { colorToHex } from "../../lib/utils";
@@ -22,7 +22,7 @@ function AttrRow({ label, value, nodeId, attrKey }: AttrRowProps) {
 
   return (
     <div className="flex items-center gap-2 pl-4 pr-3 py-[5px] w-full min-w-0">
-      <label className="text-text-muted text-[10px] w-12 flex-shrink-0 uppercase tracking-wide truncate">
+      <label className="text-text-muted text-[10px] w-20 flex-shrink-0 uppercase tracking-wide truncate">
         {label}
       </label>
       <input
@@ -63,7 +63,7 @@ function ColorRow({ label, value, nodeId, attrKey }: ColorRowProps) {
 
   return (
     <div className="flex items-center gap-2 pl-4 pr-3 py-[5px] w-full min-w-0">
-      <label className="text-text-muted text-[10px] w-12 flex-shrink-0 uppercase tracking-wide truncate">
+      <label className="text-text-muted text-[10px] w-20 flex-shrink-0 uppercase tracking-wide truncate">
         {label}
       </label>
       <div className="flex items-center gap-1.5 flex-1 min-w-0">
@@ -115,10 +115,75 @@ const VISUAL_ATTRS = [
   "fill", "stroke", "stroke-width", "opacity", "fill-opacity", "stroke-opacity",
   "d", "cx", "cy", "r", "rx", "ry", "x", "y", "width", "height",
   "x1", "y1", "x2", "y2", "points", "transform",
+  "font-size", "font-family", "font-weight", "text-anchor", "letter-spacing",
 ];
 const COLOR_ATTRS = new Set(["fill", "stroke"]);
+const TEXT_TAGS = new Set(["text", "tspan", "textpath"]);
 
-function NodeProperties({ node }: { node: VectoNode }) {
+/** Extract visible plain text from an innerHTML string (strips tspan tags). */
+function extractPlainText(raw: string): string {
+  const el = document.createElement("span");
+  el.innerHTML = raw;
+  return el.textContent ?? "";
+}
+
+// ── Text content editor ───────────────────────────────────────────────────────
+
+interface TextContentRowProps {
+  node: VectoNode;
+  focusRef?: React.RefObject<HTMLTextAreaElement>;
+}
+
+function TextContentRow({ node, focusRef }: TextContentRowProps) {
+  const updateRawContent = useDocumentStore((s) => s.updateNodeRawContent);
+  const plain = node.rawContent !== undefined ? extractPlainText(node.rawContent) : "";
+  const [draft, setDraft] = useState(plain);
+
+  // Sync draft when node changes (e.g. different element selected)
+  useEffect(() => {
+    setDraft(extractPlainText(node.rawContent ?? ""));
+  }, [node.id, node.rawContent]);
+
+  return (
+    <div className="px-4 py-2 w-full min-w-0 border-b border-border">
+      <label className="block text-[10px] text-text-muted uppercase tracking-wide mb-1.5">
+        Text Content
+      </label>
+      <textarea
+        ref={focusRef}
+        value={draft}
+        rows={3}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          updateRawContent(node.id, e.target.value);
+        }}
+        onKeyDown={(e) => {
+          // Don't let Escape propagate (would clear canvas selection)
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            setDraft(plain);
+            updateRawContent(node.id, plain);
+            (e.target as HTMLTextAreaElement).blur();
+          }
+        }}
+        className="w-full resize-none bg-surface border border-border rounded px-2 py-1.5
+                   text-[11px] text-text-primary focus:outline-none focus:border-accent
+                   leading-relaxed placeholder:text-text-muted"
+        placeholder="Enter text content…"
+      />
+    </div>
+  );
+}
+
+// ── Node properties body ──────────────────────────────────────────────────────
+
+interface NodePropertiesProps {
+  node: VectoNode;
+  textFocusRef?: React.RefObject<HTMLTextAreaElement>;
+}
+
+function NodeProperties({ node, textFocusRef }: NodePropertiesProps) {
+  const isText = TEXT_TAGS.has(node.tagName);
   const relevantAttrs = Object.entries(node.attributes).filter(([key]) =>
     VISUAL_ATTRS.includes(key)
   );
@@ -126,7 +191,7 @@ function NodeProperties({ node }: { node: VectoNode }) {
   return (
     <div className="w-full min-w-0">
       {/* Node info header */}
-      <div className="px-3 py-2 border-b border-border w-full min-w-0 pl-4">
+      <div className="px-4 py-2 border-b border-border w-full min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-text-muted uppercase tracking-wide">
             {node.tagName}
@@ -139,6 +204,9 @@ function NodeProperties({ node }: { node: VectoNode }) {
         </div>
         <p className="text-text-primary text-xs mt-0.5 truncate">{node.name}</p>
       </div>
+
+      {/* Text content editor — only for text elements */}
+      {isText && <TextContentRow node={node} focusRef={textFocusRef} />}
 
       {/* Attribute rows */}
       <div className="py-1 w-full min-w-0">
@@ -171,10 +239,19 @@ function findNode(nodes: VectoNode[], id: string): VectoNode | null {
   return null;
 }
 
+// Exposed so Canvas can call it on text double-click
+export const textEditFocusRef = { current: null as HTMLTextAreaElement | null };
+
 export function PropertiesPanel() {
   const document = useDocumentStore((s) => s.document);
   const selectedIds = useSelectionStore((s) => s.selectedIds);
   const [width, setWidth] = useState(DEFAULT_WIDTH);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Keep the shared ref in sync so Canvas can call .focus() on it
+  useEffect(() => {
+    textEditFocusRef.current = textareaRef.current;
+  });
 
   const selectedNode =
     document && selectedIds.length === 1
@@ -233,7 +310,7 @@ export function PropertiesPanel() {
               : "Nothing selected"}
           </p>
         ) : (
-          <NodeProperties node={selectedNode} />
+          <NodeProperties node={selectedNode} textFocusRef={textareaRef} />
         )}
       </div>
     </aside>

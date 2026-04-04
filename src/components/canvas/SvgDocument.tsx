@@ -2,6 +2,9 @@ import React, { memo, useCallback } from "react";
 import type { VectoDocument, VectoNode } from "../../types/svg";
 import { useSelectionStore } from "../../store/selectionStore";
 import { registerElement } from "../../lib/canvasRegistry";
+import { textEditFocusRef } from "../sidebar/PropertiesPanel";
+
+const TEXT_TAGS = new Set(["text", "tspan", "textpath"]);
 
 // ── Single SVG node ───────────────────────────────────────────────────────────
 
@@ -38,6 +41,16 @@ const SvgNode = memo(function SvgNode({ node }: SvgNodeProps) {
   const handlePointerEnter = () => setHovered(node.id);
   const handlePointerLeave = () => setHovered(null);
 
+  // Double-click on a text element → select it + focus the text editor in the
+  // Properties panel so the user can start typing immediately.
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    if (!TEXT_TAGS.has(node.tagName) || node.locked) return;
+    e.stopPropagation();
+    select([node.id]);
+    // Small delay lets React re-render and mount the textarea first
+    setTimeout(() => textEditFocusRef.current?.focus(), 50);
+  };
+
   // Build props for the SVG element.
   // svgId goes as the actual `id` attribute; our internal `id` stays in JS only.
   const svgProps: Record<string, unknown> = {
@@ -47,7 +60,8 @@ const SvgNode = memo(function SvgNode({ node }: SvgNodeProps) {
     onPointerDown: handlePointerDown,
     onPointerEnter: handlePointerEnter,
     onPointerLeave: handlePointerLeave,
-    style: { cursor: node.locked ? "default" : "pointer" },
+    onDoubleClick: handleDoubleClick,
+    style: { cursor: node.locked ? "default" : TEXT_TAGS.has(node.tagName) ? "text" : "pointer" },
   };
 
   // Text elements store their content as raw innerHTML (includes tspan children

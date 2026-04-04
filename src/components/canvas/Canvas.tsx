@@ -125,7 +125,7 @@ export function Canvas() {
           >
             {/* Artboard shadow (scales with the artboard) */}
             <div
-              className="absolute inset-0"
+              className="absolute inset-0 pointer-events-none"
               style={{ boxShadow: "0 0 0 1px #333, 0 8px 48px rgba(0,0,0,0.6)" }}
             />
             {/* SVG document — zoom via width/height, not CSS scale */}

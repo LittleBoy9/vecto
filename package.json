@@ -1,0 +1,40 @@
+{
+  "name": "vecto",
+  "description": "AI-powered SVG generation and editing desktop app built with Tauri, React, and TypeScript.",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "keywords": ["svg", "editor", "ai", "tauri", "design-tool", "claude"],
+  "author": "Sounak Das",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-fs": "^2",
+    "nanoid": "^5.0.9",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.3",
+    "immer": "^10.1.1",
+    "zundo": "^2.2.0",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^2.5.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.3"
+  }
+}

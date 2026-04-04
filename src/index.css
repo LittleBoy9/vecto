@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Reset ─────────────────────────────────────────────────────────────────── */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  /* Disable text selection across the app — it's a design tool */
+  user-select: none;
+  -webkit-user-select: none;
+  /* Prevent bounce scrolling on macOS */
+  overscroll-behavior: none;
+}
+
+/* Allow text selection inside inputs and textareas */
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ── Canvas dot-grid background ────────────────────────────────────────────── */
+
+.canvas-grid {
+  background-image: radial-gradient(circle, #2e2e2e 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* ── Thin scrollbar ─────────────────────────────────────────────────────────── */
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: #333 transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: #333;
+  border-radius: 2px;
+}
+
+/* ── Focus outline (keyboard navigation only) ───────────────────────────────── */
+
+:focus-visible {
+  outline: 2px solid #0ea5e9;
+  outline-offset: 1px;
+}
+
+/* Suppress the default Tauri drag region conflict */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}

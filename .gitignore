@@ -1,0 +1,26 @@
+# Generated
+node_modules/
+dist/
+dist-ssr/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Env
+.env
+.env.local
+.env*.local
+
+# Editor
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db

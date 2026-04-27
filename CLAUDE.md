@@ -15,12 +15,20 @@ for 60 fps interaction.
 
 ```
 CanvasManager.applyTransform()
-  → this.viewport.style.transform = `translate(...)  scale(...)`
+  → this.viewport.style.transform = `translate(px, py)`   ← pan only
+  → zoom is expressed as SVG width/height (vb.width * zoom)
   → zero React re-renders during pan / zoom
 ```
 
+**Critical zoom rule:** zoom is applied as explicit `width`/`height` on the `<svg>` element
+(`vb.width * zoom`, `vb.height * zoom`), NOT via CSS `scale()`. CSS scale rasterizes the
+SVG into a GPU texture at the original size → pixelation at high zoom. SVG dimensions
+force a fresh vector render at the correct resolution.
+
 The Zustand `uiStore.setTransform()` is called **only at the end** of an
 interaction (wheel debounce 80 ms, pointerup). It drives the zoom indicator only.
+
+**Never add `willChange: transform`** to the viewport — it rasterizes the SVG.
 
 ### 2. Single source of truth: VectoDocument
 
@@ -28,13 +36,16 @@ All SVG content lives in `documentStore.document` (a `VectoDocument` tree).
 Every edit goes through store actions (Immer + temporal for undo/redo). The
 canvas reads from this tree and renders it — it never writes back directly.
 
-### 3. Three Zustand stores — strictly separated
+### 3. Four Zustand stores — strictly separated
 
 | Store | What it holds | Undo? |
 |---|---|---|
 | `documentStore` | `VectoDocument`, filePath, isDirty | Yes (zundo, limit 100) |
 | `selectionStore` | selectedIds[], hoveredId | No |
 | `uiStore` | activeTool, zoom, panX, panY, panel state | No |
+| `pathEditStore` | editingElementId, selectedNodeIds | No |
+
+`settingsStore` (persisted) holds the Anthropic API key in localStorage.
 
 ### 4. Canvas registry — bounding boxes without React state
 
@@ -51,6 +62,24 @@ Rust never stores the key to disk — it uses it for the single request and disc
 
 The key is **never** hard-coded or read from environment variables.
 
+### 6. Artboard shadow div must have pointer-events-none
+
+The shadow `<div className="absolute inset-0">` inside the artboard is positioned,
+so it sits above in-flow SVG elements in the browser's hit-test stack. Without
+`pointer-events-none` it silently swallows all clicks, preventing canvas element
+selection. It must always have `pointer-events-none`.
+
+### 7. Path editing — temporal pause during drag
+
+When dragging path nodes/handles in `PathEditOverlay`, the undo temporal middleware
+is paused at drag start and resumed on pointerup:
+```typescript
+useDocumentStore.temporal.getState().pause();  // drag start
+// ... many pointermove updates ...
+useDocumentStore.temporal.getState().resume(); // drag end → one undo step
+```
+This keeps the full drag as a single undo entry instead of hundreds.
+
 ---
 
 ## File Map
@@ -58,28 +87,37 @@ The key is **never** hard-coded or read from environment variables.
 ```
 src/
 ├── types/svg.ts                   Core VectoDocument / VectoNode types
+│                                  VectoNode has rawContent?: string for text elements
 ├── store/
-│   ├── documentStore.ts           SVG document tree + undo/redo
+│   ├── documentStore.ts           SVG document tree + undo/redo (Immer + zundo)
 │   ├── selectionStore.ts          Selected / hovered element IDs
-│   └── uiStore.ts                 Tool, zoom, panel state
+│   ├── uiStore.ts                 Tool ("select"|"pan"|"nodeEdit"), zoom, panel state
+│   ├── pathEditStore.ts           Path node editor state (editingElementId, selectedNodeIds)
+│   └── settingsStore.ts           API key (localStorage persist)
 ├── lib/
 │   ├── svgParser.ts               SVG string → VectoDocument
+│   │                              TEXT_CONTENT_TAGS capture el.innerHTML as rawContent
 │   ├── svgSerializer.ts           VectoDocument → SVG string
+│   ├── pathParser.ts              SVG d attr ↔ PathContour[]/AnchorNode[]
+│   │                              parsePath(d) / serializePath(contours)
 │   ├── canvasRegistry.ts          nodeId → SVGGraphicsElement map
-│   └── utils.ts                   cn(), nodeIcon()
+│   └── utils.ts                   cn(), nodeIcon(), colorToHex()
 ├── components/
 │   ├── canvas/
-│   │   ├── CanvasManager.ts       CSS transform owner (no React)
-│   │   ├── Canvas.tsx             React shell, pointer routing
+│   │   ├── CanvasManager.ts       CSS translate owner (no React); wheel → zoom/pan
+│   │   ├── Canvas.tsx             React shell, pointer routing, mounts overlays
 │   │   ├── SvgDocument.tsx        Renders VectoNode tree as SVG
-│   │   └── SelectionOverlay.tsx   getBBox-based selection rects
-│   ├── toolbar/Toolbar.tsx        Tools + file actions
+│   │   │                          Double-click path → nodeEdit; double-click text → focus textarea
+│   │   ├── SelectionOverlay.tsx   getBBox-based selection rects (hidden in nodeEdit mode)
+│   │   └── PathEditOverlay.tsx    Path node editor — anchor squares + bezier handle circles
+│   ├── toolbar/Toolbar.tsx        Tools (V/H/N) + file actions + undo/redo
 │   ├── sidebar/
-│   │   ├── LayerPanel.tsx         Layer tree
-│   │   ├── LayerNode.tsx          Individual layer row
-│   │   └── PropertiesPanel.tsx    Attribute editor for selected node
-│   └── prompt/PromptBar.tsx       AI generation input
-├── hooks/useKeyboardShortcuts.ts  V/H/Delete/Esc/⌘Z
+│   │   ├── LayerPanel.tsx         Resizable layer tree (drag handle on right edge)
+│   │   ├── LayerNode.tsx          Individual layer row — bidirectional hover sync
+│   │   └── PropertiesPanel.tsx    Attribute editor; text content live editing (onChange)
+│   │                              Label column is w-20 to fit long attribute names
+│   └── prompt/PromptBar.tsx       2-row textarea, char counter, expand modal
+├── hooks/useKeyboardShortcuts.ts  V/H/N/Delete/Esc/⌘Z
 └── app/App.tsx                    Root layout
 
 src-tauri/
@@ -102,14 +140,39 @@ src-tauri/
 |---|---|
 | `V` | Select tool |
 | `H` | Pan tool |
+| `N` | Node edit tool (path editing) |
 | `Delete` / `Backspace` | Delete selected nodes |
-| `Escape` | Clear selection |
+| `Escape` | In nodeEdit: exit to select. Otherwise: clear selection |
 | `⌘Z` / `Ctrl+Z` | Undo |
 | `⌘⇧Z` / `Ctrl+⇧Z` | Redo |
-| `⌘O` / `Ctrl+O` | Open file (Toolbar) |
-| `⌘S` / `Ctrl+S` | Save file (Toolbar) |
+| `⌘O` / `Ctrl+O` | Open file |
+| `⌘S` / `Ctrl+S` | Save file |
 | Scroll | Pan canvas |
 | `⌘`+Scroll / Pinch | Zoom canvas |
+| Double-click `<path>` | Enter node edit mode for that path |
+| Double-click `<text>` | Focus text content editor in Properties panel |
+
+---
+
+## Path Node Editor
+
+When `activeTool === "nodeEdit"`:
+- `SelectionOverlay` is hidden; `PathEditOverlay` takes over
+- Cursor is `crosshair` on canvas
+- The overlay renders anchor point squares and bezier handle circles
+- Clicking blank canvas → exits node edit, returns to select
+- All node sizes (anchors, handles, strokes) are divided by zoom to stay constant on screen
+- `pathEditStore.editingElementId` holds the VectoNode ID of the path being edited
+- Only `<path>` elements (with a `d` attribute) support node editing
+
+### Path data flow
+```
+VectoNode.attributes.d
+  → parsePath(d) → PathContour[]   (on mount / d-change)
+  → drag interaction mutates working copy
+  → serializePath(contours) → new d string
+  → documentStore.updateNodeAttributes(id, { d })
+```
 
 ---
 
@@ -151,49 +214,66 @@ the machine.
 
 ---
 
-## MVP Milestone 1 — Checklist
+## Milestone Checklist
 
+### Milestone 1 — Foundation ✅
 - [x] Project bootstrapped (Tauri 2 + React + TypeScript + Tailwind)
 - [x] 3-panel layout (layers | canvas | properties) + toolbar + prompt bar
 - [x] SVG parser (`parseSVG`) — SVG string → `VectoDocument`
 - [x] SVG serializer (`serializeDocument`) — `VectoDocument` → SVG string
 - [x] Canvas renders `VectoDocument` as real SVG DOM (not raster)
 - [x] Pan (scroll or pan tool) — CSS transform, zero re-renders
-- [x] Zoom (⌘+scroll / pinch) — toward cursor, 60 fps
+- [x] Zoom (⌘+scroll / pinch) — toward cursor, 60 fps, crisp at any zoom (SVG dimensions)
 - [x] Fit-to-view on document load
-- [x] Click element → selects in canvas + layer panel synced
+- [x] Click element on canvas → selects (shadow div bug fixed with pointer-events-none)
 - [x] Shift-click → multi-select
-- [x] Selection overlay (bounding box + corner handles)
-- [x] Layer panel — tree with expand/collapse, visibility, lock toggle
-- [x] Properties panel — attribute editing (fill, stroke, etc.)
+- [x] Bidirectional hover (canvas ↔ layer panel)
+- [x] Selection overlay (bounding box + corner handles, zoom-aware sizes)
+- [x] Layer panel — resizable, tree with expand/collapse, visibility, lock toggle
+- [x] Properties panel — resizable, attribute editing, hex colors, w-20 label column
+- [x] Text element rendering (rawContent / dangerouslySetInnerHTML)
+- [x] Text content editing — live onChange in Properties panel, double-click to focus
 - [x] File open (Tauri dialog → read → parse → render)
 - [x] File save + Save As (serialize → write)
-- [x] Upload SVG → same editing experience as generated SVG
-- [x] Keyboard shortcuts (V, H, Delete, Esc, ⌘Z, ⌘⇧Z)
+- [x] Keyboard shortcuts (V, H, N, Delete, Esc, ⌘Z, ⌘⇧Z)
 - [x] Undo/redo (zundo temporal middleware, 100 steps)
 - [x] AI generation (mocked — real Claude API stub in `ai.rs`)
-- [ ] Real Claude API integration (uncomment stub in `ai.rs`, set env key)
-- [ ] Transform handles (move/resize by dragging handles on canvas)
-- [ ] Export to PNG
+- [x] Prompt bar — 2-row, char counter, expand modal
 
----
+### Milestone 2 — Path Editing ✅
+- [x] `pathParser.ts` — full SVG `d` parser (M L H V C S Q T A Z + relative variants)
+- [x] `pathEditStore` — editing state
+- [x] `PathEditOverlay` — interactive anchor + handle editor
+- [x] Node edit tool (`N` key, toolbar button `◈`)
+- [x] Double-click path → enter node edit mode
+- [x] Drag anchors (moves anchor + both handles together)
+- [x] Drag bezier handles (smooth nodes mirror opposite handle)
+- [x] Live `d` attribute update during drag
+- [x] Single undo step per drag (temporal pause/resume)
+- [x] Escape exits node edit, returns to select tool
+- [x] Delete selected anchor nodes (Delete/Backspace in nodeEdit mode)
+- [x] Insert node by clicking on a path segment (De Casteljau split at projected t)
+- [x] Smooth ↔ corner node toggle (double-click anchor; diamond = smooth, square = corner)
 
-## Next Milestones
+### Milestone 3 — Transform Handles ✅
+- [x] Drag to move selected elements (prepend translate to existing transform)
+- [x] Resize via corner handles (scale around opposite pivot corner)
+- [x] Works for multi-element selection (union bbox)
+- [x] Transform consolidated to single matrix on drag end
+- [x] Single undo step per drag (temporal pause/resume)
 
-**Milestone 2 — Editing**
-- Drag to move selected elements (pointermove → attribute update)
-- Resize via corner handles
-- Group/ungroup (`<g>`)
+### Milestone 4 — Real AI
+- [ ] Wire up Claude API in `ai.rs`
+- [ ] Prompt engineering for clean SVG output
+- [ ] Streaming response (show partial SVG as it generates)
 
-**Milestone 3 — Real AI**
-- Wire up Claude API in `ai.rs`
-- Prompt engineering for clean SVG output
-- Streaming response (show partial SVG as it generates)
+### Milestone 5 — Export ✅
+- [x] PNG export via `resvg` Rust crate (2× retina by default, max 16 384 px)
+- [x] SVG copy to clipboard (`navigator.clipboard.writeText`)
+- [x] Export buttons in toolbar: "Copy SVG" + "Export PNG"
+- [x] `src-tauri/src/commands/export.rs` — `export_png(svg_content, path, scale)`
+- [x] System font loading so `<text>` elements render correctly in PNG
 
-**Milestone 4 — Export**
-- PNG export via `resvg` Rust crate
-- SVG copy to clipboard
-
-**Milestone 5 — Plugin system**
-- Define plugin API surface (which store actions are public)
-- Rust-side plugin host
+### Milestone 6 — Plugin system
+- [ ] Define plugin API surface (which store actions are public)
+- [ ] Rust-side plugin host

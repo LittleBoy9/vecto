@@ -1,10 +1,13 @@
 import React, { memo, useCallback } from "react";
 import type { VectoDocument, VectoNode } from "../../types/svg";
 import { useSelectionStore } from "../../store/selectionStore";
+import { useUIStore } from "../../store/uiStore";
+import { usePathEditStore } from "../../store/pathEditStore";
 import { registerElement } from "../../lib/canvasRegistry";
 import { textEditFocusRef } from "../sidebar/PropertiesPanel";
 
 const TEXT_TAGS = new Set(["text", "tspan", "textpath"]);
+const PATH_TAGS = new Set(["path", "polyline", "polygon"]);
 
 // ── Single SVG node ───────────────────────────────────────────────────────────
 
@@ -16,6 +19,8 @@ const SvgNode = memo(function SvgNode({ node }: SvgNodeProps) {
   const select = useSelectionStore((s) => s.select);
   const addToSelection = useSelectionStore((s) => s.addToSelection);
   const setHovered = useSelectionStore((s) => s.setHovered);
+  const setTool = useUIStore((s) => s.setTool);
+  const startEditing = usePathEditStore((s) => s.startEditing);
 
   // Register this DOM element in the global registry so SelectionOverlay can
   // call getBBox() on it without going through React state.
@@ -41,14 +46,24 @@ const SvgNode = memo(function SvgNode({ node }: SvgNodeProps) {
   const handlePointerEnter = () => setHovered(node.id);
   const handlePointerLeave = () => setHovered(null);
 
-  // Double-click on a text element → select it + focus the text editor in the
-  // Properties panel so the user can start typing immediately.
+  // Double-click → enter the appropriate edit mode for this element type.
   const handleDoubleClick = (e: React.MouseEvent) => {
-    if (!TEXT_TAGS.has(node.tagName) || node.locked) return;
+    if (node.locked) return;
     e.stopPropagation();
-    select([node.id]);
-    // Small delay lets React re-render and mount the textarea first
-    setTimeout(() => textEditFocusRef.current?.focus(), 50);
+
+    if (PATH_TAGS.has(node.tagName) && node.attributes?.d) {
+      // Path element → enter node edit mode
+      select([node.id]);
+      setTool("nodeEdit");
+      startEditing(node.id);
+      return;
+    }
+
+    if (TEXT_TAGS.has(node.tagName)) {
+      // Text element → focus the text editor in the Properties panel
+      select([node.id]);
+      setTimeout(() => textEditFocusRef.current?.focus(), 50);
+    }
   };
 
   // Build props for the SVG element.
@@ -61,7 +76,13 @@ const SvgNode = memo(function SvgNode({ node }: SvgNodeProps) {
     onPointerEnter: handlePointerEnter,
     onPointerLeave: handlePointerLeave,
     onDoubleClick: handleDoubleClick,
-    style: { cursor: node.locked ? "default" : TEXT_TAGS.has(node.tagName) ? "text" : "pointer" },
+    style: {
+      cursor: node.locked
+        ? "default"
+        : TEXT_TAGS.has(node.tagName)
+        ? "text"
+        : "pointer",
+    },
   };
 
   // Text elements store their content as raw innerHTML (includes tspan children

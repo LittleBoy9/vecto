@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef } from "react";
 import { CanvasManager } from "./CanvasManager";
 import { SvgDocument } from "./SvgDocument";
 import { SelectionOverlay } from "./SelectionOverlay";
+import { PathEditOverlay } from "./PathEditOverlay";
 import { useDocumentStore } from "../../store/documentStore";
 import { useSelectionStore } from "../../store/selectionStore";
 import { useUIStore } from "../../store/uiStore";
+import { usePathEditStore } from "../../store/pathEditStore";
 
 export function Canvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -20,6 +22,14 @@ export function Canvas() {
   const zoom = useUIStore((s) => s.zoom);
   const setTransform = useUIStore((s) => s.setTransform);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
+  const stopEditing = usePathEditStore((s) => s.stopEditing);
+
+  // Stable screenToDoc callback threaded into PathEditOverlay
+  const screenToDoc = useCallback(
+    (sx: number, sy: number) =>
+      managerRef.current?.screenToDoc(sx, sy) ?? { x: sx, y: sy },
+    []
+  );
 
   // ── Create / destroy CanvasManager ──────────────────────────────────────────
   useEffect(() => {
@@ -66,10 +76,16 @@ export function Canvas() {
         e.target === containerRef.current ||
         e.target === viewportRef.current
       ) {
-        clearSelection();
+        if (activeTool === "nodeEdit") {
+          // Exit node edit mode, return to select
+          stopEditing();
+          useUIStore.getState().setTool("select");
+        } else {
+          clearSelection();
+        }
       }
     },
-    [activeTool, clearSelection]
+    [activeTool, clearSelection, stopEditing]
   );
 
   const handlePointerMove = useCallback(
@@ -92,7 +108,13 @@ export function Canvas() {
 
   // ── Cursor ──────────────────────────────────────────────────────────────────
   const cursor =
-    activeTool === "pan" ? "grab" : isPanningRef.current ? "grabbing" : "default";
+    activeTool === "pan"
+      ? "grab"
+      : isPanningRef.current
+      ? "grabbing"
+      : activeTool === "nodeEdit"
+      ? "crosshair"
+      : "default";
 
   return (
     <div
@@ -130,8 +152,18 @@ export function Canvas() {
             />
             {/* SVG document — zoom via width/height, not CSS scale */}
             <SvgDocument document={document} zoom={zoom} />
-            {/* Selection overlay — same zoom treatment */}
-            <SelectionOverlay document={document} zoom={zoom} />
+            {/* Selection overlay — hidden in node edit mode */}
+            {activeTool !== "nodeEdit" && (
+              <SelectionOverlay document={document} zoom={zoom} screenToDoc={screenToDoc} />
+            )}
+            {/* Path node editor overlay */}
+            {activeTool === "nodeEdit" && (
+              <PathEditOverlay
+                document={document}
+                zoom={zoom}
+                screenToDoc={screenToDoc}
+              />
+            )}
           </div>
         )}
       </div>

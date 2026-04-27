@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type Tool = "select" | "pan";
+export type Tool = "select" | "pan" | "nodeEdit";
 
 interface UIState {
   activeTool: Tool;

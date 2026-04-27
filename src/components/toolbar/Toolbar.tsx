@@ -97,6 +97,33 @@ export function Toolbar() {
     }
   };
 
+  const handleCopySvg = async () => {
+    if (!doc) return;
+    const content = serializeDocument(doc);
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch (err) {
+      console.error("Clipboard write failed:", err);
+    }
+  };
+
+  const handleExportPng = async () => {
+    if (!doc) return;
+    const targetPath = await save({
+      filters: [{ name: "PNG Image", extensions: ["png"] }],
+      defaultPath: (filePath ?? "untitled").replace(/\.svg$/i, "") + ".png",
+    });
+    if (!targetPath) return;
+
+    const content = serializeDocument(doc);
+    try {
+      // 2× scale by default — crisp on retina displays
+      await invoke("export_png", { svgContent: content, path: targetPath, scale: 2.0 });
+    } catch (err) {
+      console.error("PNG export failed:", err);
+    }
+  };
+
   const handleSaveAs = async () => {
     if (!doc) return;
     const targetPath = await save({
@@ -153,6 +180,14 @@ export function Toolbar() {
         icon="✋"
         active={activeTool === "pan"}
         onClick={() => setTool("pan")}
+      />
+      <ToolButton
+        tool="nodeEdit"
+        label="Node Edit"
+        shortcut="N"
+        icon="◈"
+        active={activeTool === "nodeEdit"}
+        onClick={() => setTool("nodeEdit")}
       />
 
       <Sep />
@@ -211,6 +246,25 @@ export function Toolbar() {
         className="text-text-secondary hover:text-text-primary text-xs px-2 py-1 rounded hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed"
       >
         Save As
+      </button>
+
+      <Sep />
+
+      <button
+        onClick={handleCopySvg}
+        disabled={!doc}
+        title="Copy SVG markup to clipboard"
+        className="text-text-secondary hover:text-text-primary text-xs px-2 py-1 rounded hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        Copy SVG
+      </button>
+      <button
+        onClick={handleExportPng}
+        disabled={!doc}
+        title="Export as PNG (2× retina)"
+        className="text-text-secondary hover:text-text-primary text-xs px-2 py-1 rounded hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        Export PNG
       </button>
 
       <Sep />

@@ -1,6 +1,7 @@
 mod commands;
 
 use commands::ai::generate_svg;
+use commands::export::export_png;
 use commands::fs_commands::{open_svg_file, save_svg_file};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -11,6 +12,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             generate_svg,
+            export_png,
             open_svg_file,
             save_svg_file,
         ])

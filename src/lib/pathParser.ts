@@ -184,8 +184,8 @@ function toAbsoluteCmds(d: string): AbsCmd[] {
       }
       case "T": {
         // Reflect previous Q/T control point through current point
-        const qx1 = prevCPForT ? 2 * cx - prevCPForT.x : cx;
-        const qy1 = prevCPForT ? 2 * cy - prevCPForT.y : cy;
+        const qx1: number = prevCPForT ? 2 * cx - prevCPForT.x : cx;
+        const qy1: number = prevCPForT ? 2 * cy - prevCPForT.y : cy;
         const qx  = rel ? cx + num() : num();
         const qy  = rel ? cy + num() : num();
         cmds.push({

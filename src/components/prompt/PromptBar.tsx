@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { parseSVG } from "../../lib/svgParser";
 import { useDocumentStore } from "../../store/documentStore";
 import type { VectoDocument } from "../../types/svg";
 import { useSelectionStore } from "../../store/selectionStore";
 import { useUIStore } from "../../store/uiStore";
-import { useSettingsStore } from "../../store/settingsStore";
+import { useSettingsStore, activeKey } from "../../store/settingsStore";
 import { cn } from "../../lib/utils";
 
 const MAX_CHARS = 4000;
@@ -15,6 +16,7 @@ const MAX_CHARS = 4000;
 interface UseGenerateOptions {
   prompt: string;
   apiKey: string;
+  provider: string;
   hasKey: boolean;
   openSettings: () => void;
   isGenerating: boolean;
@@ -24,9 +26,32 @@ interface UseGenerateOptions {
   onError: (msg: string | null) => void;
 }
 
+/** Find the complete <svg>...</svg> block in accumulated text. */
+function extractSvg(text: string): string | null {
+  const start = text.indexOf("<svg");
+  if (start === -1) return null;
+  const end = text.lastIndexOf("</svg>");
+  if (end === -1 || end < start) return null;
+  return text.slice(start, end + "</svg>".length);
+}
+
+/**
+ * Extract whatever SVG we have so far — close the tag artificially if the
+ * stream hasn't finished yet so the browser can attempt a render.
+ */
+function extractPartialSvg(text: string): string | null {
+  const start = text.indexOf("<svg");
+  if (start === -1) return null;
+  const end = text.lastIndexOf("</svg>");
+  if (end !== -1) return text.slice(start, end + "</svg>".length);
+  // Partial: close it so the SVG parser has something valid to attempt
+  return text.slice(start) + "</svg>";
+}
+
 async function runGenerate({
   prompt,
   apiKey,
+  provider,
   hasKey,
   openSettings,
   isGenerating,
@@ -47,15 +72,45 @@ async function runGenerate({
   setGenerating(true);
   clearSelection();
 
+  // Pause undo history — streaming produces many intermediate states;
+  // resume at the end so the final SVG is a single undo entry.
+  useDocumentStore.temporal.getState().pause();
+
+  const accumulated = { text: "" };
+  let lastRenderMs = 0;
+
+  const unlisten = await listen<string>("svg:chunk", (event) => {
+    accumulated.text += event.payload;
+
+    // Throttle canvas updates to ~10 fps during streaming
+    const now = Date.now();
+    if (now - lastRenderMs < 100) return;
+    lastRenderMs = now;
+
+    const partial = extractPartialSvg(accumulated.text);
+    if (!partial) return;
+    try {
+      setDocument(parseSVG(partial));
+    } catch {
+      // Ignore — partial SVG may be temporarily malformed mid-stream
+    }
+  });
+
   try {
-    const svgString = await invoke<string>("generate_svg", {
-      prompt: trimmed,
-      apiKey,
-    });
-    setDocument(parseSVG(svgString));
+    await invoke("generate_svg_stream", { prompt: trimmed, apiKey, provider });
+
+    // Final authoritative render from the complete response
+    const final = extractSvg(accumulated.text);
+    if (final) {
+      setDocument(parseSVG(final));
+    } else if (!accumulated.text.includes("<svg")) {
+      onError("Claude did not return valid SVG markup. Try rephrasing your prompt.");
+    }
   } catch (err) {
     onError(String(err));
   } finally {
+    unlisten();
+    useDocumentStore.temporal.getState().resume();
     setGenerating(false);
   }
 }
@@ -235,7 +290,10 @@ export function PromptBar() {
   const setGenerating = useUIStore((s) => s.setGenerating);
   const setDocument = useDocumentStore((s) => s.setDocument);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
-  const { apiKey, openSettings } = useSettingsStore();
+  const settingsState = useSettingsStore();
+  const { openSettings } = settingsState;
+  const apiKey = activeKey(settingsState);
+  const provider = settingsState.provider;
 
   const hasKey = apiKey.trim().length > 0;
   const charCount = prompt.length;
@@ -244,6 +302,7 @@ export function PromptBar() {
   const generateArgs: UseGenerateOptions = {
     prompt,
     apiKey,
+    provider,
     hasKey,
     openSettings,
     isGenerating,

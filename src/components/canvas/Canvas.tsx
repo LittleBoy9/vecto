@@ -3,10 +3,24 @@ import { CanvasManager } from "./CanvasManager";
 import { SvgDocument } from "./SvgDocument";
 import { SelectionOverlay } from "./SelectionOverlay";
 import { PathEditOverlay } from "./PathEditOverlay";
+import { DrawOverlay } from "./DrawOverlay";
 import { useDocumentStore } from "../../store/documentStore";
 import { useSelectionStore } from "../../store/selectionStore";
 import { useUIStore } from "../../store/uiStore";
 import { usePathEditStore } from "../../store/pathEditStore";
+import type { VectoDocument } from "../../types/svg";
+
+const DRAW_TOOLS = new Set(["rect", "ellipse", "line", "pen"]);
+
+function blankDocument(): VectoDocument {
+  return {
+    id: crypto.randomUUID(),
+    viewBox: { x: 0, y: 0, width: 800, height: 600 },
+    width: "800",
+    height: "600",
+    nodes: [],
+  };
+}
 
 export function Canvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -18,11 +32,19 @@ export function Canvas() {
   const lastPointerRef = useRef({ x: 0, y: 0 });
 
   const document = useDocumentStore((s) => s.document);
+  const setDocument = useDocumentStore((s) => s.setDocument);
   const activeTool = useUIStore((s) => s.activeTool);
   const zoom = useUIStore((s) => s.zoom);
   const setTransform = useUIStore((s) => s.setTransform);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
   const stopEditing = usePathEditStore((s) => s.stopEditing);
+
+  // Auto-create a blank document when a drawing tool is activated with nothing open
+  useEffect(() => {
+    if (DRAW_TOOLS.has(activeTool) && !document) {
+      setDocument(blankDocument());
+    }
+  }, [activeTool, document, setDocument]);
 
   // Stable screenToDoc callback threaded into PathEditOverlay
   const screenToDoc = useCallback(
@@ -60,6 +82,9 @@ export function Canvas() {
     (e: React.PointerEvent<HTMLDivElement>) => {
       const mgr = managerRef.current;
       if (!mgr) return;
+
+      // Drawing tools capture events in DrawOverlay — skip Canvas handler
+      if (DRAW_TOOLS.has(activeTool)) return;
 
       const isPanTool = activeTool === "pan" || e.button === 1;
 
@@ -112,7 +137,7 @@ export function Canvas() {
       ? "grab"
       : isPanningRef.current
       ? "grabbing"
-      : activeTool === "nodeEdit"
+      : activeTool === "nodeEdit" || DRAW_TOOLS.has(activeTool)
       ? "crosshair"
       : "default";
 
@@ -159,6 +184,14 @@ export function Canvas() {
             {/* Path node editor overlay */}
             {activeTool === "nodeEdit" && (
               <PathEditOverlay
+                document={document}
+                zoom={zoom}
+                screenToDoc={screenToDoc}
+              />
+            )}
+            {/* Drawing overlay — rect / ellipse / line / pen tools */}
+            {DRAW_TOOLS.has(activeTool) && (
+              <DrawOverlay
                 document={document}
                 zoom={zoom}
                 screenToDoc={screenToDoc}

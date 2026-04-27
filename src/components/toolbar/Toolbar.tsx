@@ -6,7 +6,7 @@ import { serializeDocument } from "../../lib/svgSerializer";
 import { useDocumentStore } from "../../store/documentStore";
 import { useSelectionStore } from "../../store/selectionStore";
 import { useUIStore, type Tool } from "../../store/uiStore";
-import { useSettingsStore } from "../../store/settingsStore";
+import { useSettingsStore, activeKey } from "../../store/settingsStore";
 
 // ── Tool button ───────────────────────────────────────────────────────────────
 
@@ -51,7 +51,9 @@ export function Toolbar() {
   const { document: doc, isDirty, filePath, setDocument, setFilePath, markClean } =
     useDocumentStore();
   const clearSelection = useSelectionStore((s) => s.clearSelection);
-  const { apiKey, openSettings } = useSettingsStore();
+  const settingsState = useSettingsStore();
+  const { openSettings } = settingsState;
+  const apiKey = activeKey(settingsState);
 
   // ── File actions ────────────────────────────────────────────────────────────
 
@@ -188,6 +190,42 @@ export function Toolbar() {
         icon="◈"
         active={activeTool === "nodeEdit"}
         onClick={() => setTool("nodeEdit")}
+      />
+
+      <Sep />
+
+      {/* Drawing tools */}
+      <ToolButton
+        tool="rect"
+        label="Rectangle"
+        shortcut="R"
+        icon="▭"
+        active={activeTool === "rect"}
+        onClick={() => setTool("rect")}
+      />
+      <ToolButton
+        tool="ellipse"
+        label="Ellipse"
+        shortcut="E"
+        icon="◯"
+        active={activeTool === "ellipse"}
+        onClick={() => setTool("ellipse")}
+      />
+      <ToolButton
+        tool="line"
+        label="Line"
+        shortcut="L"
+        icon="╱"
+        active={activeTool === "line"}
+        onClick={() => setTool("line")}
+      />
+      <ToolButton
+        tool="pen"
+        label="Pen"
+        shortcut="P"
+        icon="✒"
+        active={activeTool === "pen"}
+        onClick={() => setTool("pen")}
       />
 
       <Sep />

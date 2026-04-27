@@ -1,13 +1,21 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+export type Provider = "anthropic" | "openai" | "gemini";
+
 interface SettingsState {
-  apiKey: string;
+  provider: Provider;
+  anthropicKey: string;
+  openaiKey: string;
+  geminiKey: string;
   settingsOpen: boolean;
 }
 
 interface SettingsActions {
-  setApiKey: (key: string) => void;
+  setProvider: (p: Provider) => void;
+  setAnthropicKey: (k: string) => void;
+  setOpenaiKey: (k: string) => void;
+  setGeminiKey: (k: string) => void;
   openSettings: () => void;
   closeSettings: () => void;
 }
@@ -15,17 +23,34 @@ interface SettingsActions {
 export const useSettingsStore = create<SettingsState & SettingsActions>()(
   persist(
     (set) => ({
-      apiKey: "",
+      provider: "anthropic",
+      anthropicKey: "",
+      openaiKey: "",
+      geminiKey: "",
       settingsOpen: false,
 
-      setApiKey: (apiKey) => set({ apiKey }),
+      setProvider: (provider) => set({ provider }),
+      setAnthropicKey: (anthropicKey) => set({ anthropicKey }),
+      setOpenaiKey: (openaiKey) => set({ openaiKey }),
+      setGeminiKey: (geminiKey) => set({ geminiKey }),
       openSettings: () => set({ settingsOpen: true }),
       closeSettings: () => set({ settingsOpen: false }),
     }),
     {
       name: "vecto-settings",
-      // Only persist the key — not the modal open state
-      partialize: (state) => ({ apiKey: state.apiKey }),
+      partialize: (s) => ({
+        provider: s.provider,
+        anthropicKey: s.anthropicKey,
+        openaiKey: s.openaiKey,
+        geminiKey: s.geminiKey,
+      }),
     }
   )
 );
+
+/** Returns the API key for the currently selected provider. */
+export function activeKey(state: Pick<SettingsState, "provider" | "anthropicKey" | "openaiKey" | "geminiKey">) {
+  if (state.provider === "openai") return state.openaiKey;
+  if (state.provider === "gemini") return state.geminiKey;
+  return state.anthropicKey;
+}

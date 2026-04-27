@@ -1,6 +1,6 @@
 mod commands;
 
-use commands::ai::generate_svg;
+use commands::ai::{generate_svg, generate_svg_stream};
 use commands::export::export_png;
 use commands::fs_commands::{open_svg_file, save_svg_file};
 
@@ -12,6 +12,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             generate_svg,
+            generate_svg_stream,
             export_png,
             open_svg_file,
             save_svg_file,

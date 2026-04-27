@@ -237,7 +237,7 @@ the machine.
 - [x] File save + Save As (serialize → write)
 - [x] Keyboard shortcuts (V, H, N, Delete, Esc, ⌘Z, ⌘⇧Z)
 - [x] Undo/redo (zundo temporal middleware, 100 steps)
-- [x] AI generation (mocked — real Claude API stub in `ai.rs`)
+- [x] AI generation (real Claude API — `generate_svg` in `ai.rs`)
 - [x] Prompt bar — 2-row, char counter, expand modal
 
 ### Milestone 2 — Path Editing ✅
@@ -262,10 +262,11 @@ the machine.
 - [x] Transform consolidated to single matrix on drag end
 - [x] Single undo step per drag (temporal pause/resume)
 
-### Milestone 4 — Real AI
-- [ ] Wire up Claude API in `ai.rs`
-- [ ] Prompt engineering for clean SVG output
-- [ ] Streaming response (show partial SVG as it generates)
+### Milestone 4 — Real AI ✅
+- [x] Wire up Claude API in `ai.rs` (model: claude-sonnet-4-6, max_tokens: 8000)
+- [x] Prompt engineering for clean SVG output (12-rule system prompt, presentation attrs only, no CSS)
+- [x] Robust SVG extraction (`extract_svg` strips markdown fences, finds `<svg…</svg>` block)
+- [x] Streaming response — SSE via `generate_svg_stream`; partial SVG rendered live every 100 ms; single undo entry on completion
 
 ### Milestone 5 — Export ✅
 - [x] PNG export via `resvg` Rust crate (2× retina by default, max 16 384 px)
@@ -274,6 +275,18 @@ the machine.
 - [x] `src-tauri/src/commands/export.rs` — `export_png(svg_content, path, scale)`
 - [x] System font loading so `<text>` elements render correctly in PNG
 
-### Milestone 6 — Plugin system
+### Milestone 6 — Drawing Tools ✅
+- [x] Rectangle tool (R) — drag to draw, click for 100×100 default, Shift = square
+- [x] Ellipse tool (E) — drag to draw, click for circle default, Shift = circle
+- [x] Line tool (L) — drag to draw
+- [x] Pen tool (P) — click to add points, double-click / Enter to finish open path, click start point to close
+- [x] Live dashed preview during drag (zoom-aware stroke width)
+- [x] Auto-creates blank 800×600 document if nothing is open
+- [x] After commit: switches back to select tool, selects new element
+- [x] Escape cancels drawing; R/E/L/P keyboard shortcuts
+- [x] `documentStore.addNode` action for appending new nodes
+- [x] `DrawOverlay.tsx` — overlay SVG in document-space coordinates
+
+### Milestone 7 — Plugin system
 - [ ] Define plugin API surface (which store actions are public)
 - [ ] Rust-side plugin host

@@ -50,6 +50,8 @@ interface DocumentActions {
   toggleNodeLock: (nodeId: string) => void;
   /** Update the raw text content of a text/tspan node. */
   updateNodeRawContent: (nodeId: string, rawContent: string) => void;
+  /** Append a new node to the top level of the document. */
+  addNode: (node: VectoNode) => void;
   /** Remove nodes by internal ID. */
   deleteNodes: (ids: string[]) => void;
   setFilePath: (path: string) => void;
@@ -104,6 +106,13 @@ export const useDocumentStore = create<DocumentStore>()(
           walkNodes(state.document.nodes, nodeId, (node) => {
             node.rawContent = rawContent;
           });
+          state.isDirty = true;
+        }),
+
+      addNode: (node) =>
+        set((state) => {
+          if (!state.document) return;
+          state.document.nodes.push(node as VectoNode);
           state.isDirty = true;
         }),
 

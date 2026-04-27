@@ -69,6 +69,26 @@ export function useKeyboardShortcuts() {
         case "N":
           setTool("nodeEdit");
           break;
+        case "r":
+        case "R":
+          setTool("rect");
+          stopEditing();
+          break;
+        case "e":
+        case "E":
+          setTool("ellipse");
+          stopEditing();
+          break;
+        case "l":
+        case "L":
+          setTool("line");
+          stopEditing();
+          break;
+        case "p":
+        case "P":
+          setTool("pen");
+          stopEditing();
+          break;
         case "Delete":
         case "Backspace":
           if (activeTool === "nodeEdit" && selectedNodeIds.length > 0 && editingElementId) {
@@ -97,8 +117,10 @@ export function useKeyboardShortcuts() {
           break;
         case "Escape":
           if (activeTool === "nodeEdit") {
-            // Exit node edit → back to select, keep element selected
             stopEditing();
+            setTool("select");
+          } else if (["rect", "ellipse", "line", "pen"].includes(activeTool)) {
+            // DrawOverlay handles cancel — just switch back to select
             setTool("select");
           } else {
             clearSelection();

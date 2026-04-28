@@ -121,6 +121,12 @@ export const PathEditOverlay = memo(function PathEditOverlay({
       if (e.shiftKey) addNodeToSelection(anchorId);
       else selectNodes([anchorId]);
 
+      // Snapshot pre-drag state before pausing so this drag is its own undo entry
+      const { pastStates } = useDocumentStore.temporal.getState();
+      useDocumentStore.temporal.setState({
+        pastStates: [...pastStates, { document: useDocumentStore.getState().document }],
+        futureStates: [],
+      });
       useDocumentStore.temporal.getState().pause();
 
       dragRef.current = {

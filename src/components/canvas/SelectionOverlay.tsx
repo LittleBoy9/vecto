@@ -154,6 +154,14 @@ export const SelectionOverlay = memo(function SelectionOverlay({
 
       // Capture on the element that received pointerdown so move/up bubble to SVG
       (e.currentTarget as SVGElement).setPointerCapture(e.pointerId);
+
+      // Snapshot pre-drag state into history BEFORE pausing so this drag
+      // becomes its own undo entry (resume() alone doesn't create one).
+      const { pastStates } = useDocumentStore.temporal.getState();
+      useDocumentStore.temporal.setState({
+        pastStates: [...pastStates, { document: useDocumentStore.getState().document }],
+        futureStates: [],
+      });
       useDocumentStore.temporal.getState().pause();
     },
     [selectedIds, document, zoom, screenToDoc]

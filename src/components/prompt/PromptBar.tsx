@@ -72,8 +72,13 @@ async function runGenerate({
   setGenerating(true);
   clearSelection();
 
-  // Pause undo history — streaming produces many intermediate states;
-  // resume at the end so the final SVG is a single undo entry.
+  // Snapshot pre-stream state into history BEFORE pausing so AI generation
+  // becomes its own undo entry (resume() alone doesn't create one).
+  const { pastStates } = useDocumentStore.temporal.getState();
+  useDocumentStore.temporal.setState({
+    pastStates: [...pastStates, { document: useDocumentStore.getState().document }],
+    futureStates: [],
+  });
   useDocumentStore.temporal.getState().pause();
 
   const accumulated = { text: "" };

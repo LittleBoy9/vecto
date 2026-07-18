@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0ea5e9"/>
+      <stop offset="1" stop-color="#ec4899"/>
+    </linearGradient>
+  </defs>
+  <!-- mark inset with ~9% padding so it sits nicely in the dock / taskbar -->
+  <g transform="translate(96,96) scale(13)">
+    <rect width="64" height="64" rx="15" fill="url(#g)"/>
+    <path d="M18 21 L32 43 L46 21" fill="none" stroke="#fff" stroke-width="6"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="18" cy="21" r="3.4" fill="#fff"/>
+    <circle cx="46" cy="21" r="3.4" fill="#fff"/>
+  </g>
+</svg>

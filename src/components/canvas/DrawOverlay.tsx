@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useUIStore } from "../../store/uiStore";
 import { useDocumentStore } from "../../store/documentStore";
 import { useSelectionStore } from "../../store/selectionStore";
+import { textEditFocusRef } from "../sidebar/PropertiesPanel";
 import type { VectoDocument, VectoNode, VectoNodeType } from "../../types/svg";
 
 interface DrawOverlayProps {
@@ -146,6 +147,22 @@ export function DrawOverlay({ document, zoom, screenToDoc }: DrawOverlayProps) {
       if (e.button !== 0) return;
 
       const cur = screenToDoc(e.clientX, e.clientY);
+
+      if (activeTool === "text") {
+        // Click to place a text element, then focus the Properties editor.
+        const node = makeNode("text", "text", {
+          x: String(Math.round(cur.x)),
+          y: String(Math.round(cur.y)),
+          "font-size": "24",
+          "font-family": "sans-serif",
+          fill: "#e5e5e5",
+        });
+        node.rawContent = "Text";
+        node.name = "Text";
+        commit(node);
+        setTimeout(() => textEditFocusRef.current?.focus(), 60);
+        return;
+      }
 
       if (activeTool === "pen") {
         // Double-click → commit open path without adding extra point

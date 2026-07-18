@@ -24,41 +24,43 @@
  *   → entire drag = one undo step.
  */
 
-import { memo, useCallback, useRef } from "react";
+import { memo, useCallback, useRef, useState } from "react";
 import { useSelectionStore } from "../../store/selectionStore";
-import { useDocumentStore } from "../../store/documentStore";
+import { useDocumentStore, beginUndoBatch, endUndoBatch } from "../../store/documentStore";
+import { useUIStore } from "../../store/uiStore";
 import { canvasRegistry } from "../../lib/canvasRegistry";
+import { getDocBBox as getBBoxForId, unionDocBBox as unionBBox } from "../../lib/bbox";
 import type { BoundingBox, VectoDocument, VectoNode } from "../../types/svg";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function getBBoxForId(id: string): BoundingBox | null {
-  const el = canvasRegistry.get(id);
-  if (!el) return null;
-  try {
-    const b = el.getBBox();
-    return b.width > 0 || b.height > 0 ? b : null;
-  } catch {
-    return null;
-  }
-}
-
-function unionBBox(ids: string[]): BoundingBox | null {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  let found = false;
-  for (const id of ids) {
-    const b = getBBoxForId(id);
-    if (!b) continue;
-    found = true;
-    minX = Math.min(minX, b.x);
-    minY = Math.min(minY, b.y);
-    maxX = Math.max(maxX, b.x + b.width);
-    maxY = Math.max(maxY, b.y + b.height);
-  }
-  return found ? { x: minX, y: minY, width: maxX - minX, height: maxY - minY } : null;
-}
-
 function fmt(n: number) { return parseFloat(n.toFixed(4)).toString(); }
+
+/** Map a DOM element (or its nearest registered ancestor) back to a node id. */
+function nodeIdForElement(el: Element | null): string | null {
+  let cur: Element | null = el;
+  while (cur) {
+    for (const [id, reg] of canvasRegistry) {
+      if (reg === cur) return id;
+    }
+    cur = cur.parentElement;
+  }
+  return null;
+}
+
+/**
+ * Top-most canvas node under a screen point. Walks the full hit stack so the
+ * selection move-rect (and any overlay chrome) is skipped in favour of the real
+ * element beneath it — this is what lets you click an element that lies inside
+ * the current selection's bounding box.
+ */
+function topNodeUnderPoint(clientX: number, clientY: number): string | null {
+  for (const el of document.elementsFromPoint(clientX, clientY)) {
+    const id = nodeIdForElement(el);
+    if (id) return id;
+  }
+  return null;
+}
 
 function findVectoNode(doc: VectoDocument, id: string): VectoNode | null {
   function walk(nodes: VectoNode[]): VectoNode | null {
@@ -80,7 +82,7 @@ const RESIZE_HANDLES = [
   { cursor: "se-resize", pivotIdx: 0 }, // bottom-right → top-left pivot
 ];
 
-type DragMode = "move" | "resize-0" | "resize-1" | "resize-2" | "resize-3";
+type DragMode = "move" | "rotate" | "resize-0" | "resize-1" | "resize-2" | "resize-3";
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -97,17 +99,30 @@ export const SelectionOverlay = memo(function SelectionOverlay({
 }: SelectionOverlayProps) {
   const selectedIds = useSelectionStore((s) => s.selectedIds);
   const hoveredId   = useSelectionStore((s) => s.hoveredId);
+  const select         = useSelectionStore((s) => s.select);
+  const addToSelection = useSelectionStore((s) => s.addToSelection);
+  const clearSelection = useSelectionStore((s) => s.clearSelection);
   const updateNodeAttributes = useDocumentStore((s) => s.updateNodeAttributes);
 
   // Drag state — all in refs, no setState during drag
   const dragRef = useRef<{
     mode: DragMode;
     startDocPos: { x: number; y: number };
+    startClient: { x: number; y: number };
+    moved: boolean;          // crossed the click→drag threshold yet?
+    batchStarted: boolean;   // opened an undo batch yet?
+    shiftKey: boolean;
     originalTransforms: Record<string, string>;
     originalBBox: BoundingBox;
+    // candidate snap lines (edges + centers of other elements + artboard)
+    snapX: number[];
+    snapY: number[];
     // corners at drag-start: [tl, tr, bl, br]
     corners: [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }, { x: number; y: number }];
   } | null>(null);
+
+  // Smart-guide lines shown during a move-drag.
+  const [guides, setGuides] = useState<{ x: number | null; y: number | null }>({ x: null, y: null });
 
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -138,12 +153,39 @@ export const SelectionOverlay = memo(function SelectionOverlay({
         originalTransforms[id] = n?.attributes?.transform ?? "";
       }
 
+      // Snap targets: edges + centers of every other top-level node, plus artboard.
+      const selSet = new Set(selectedIds);
+      const snapX: number[] = [];
+      const snapY: number[] = [];
+      for (const node of document.nodes) {
+        if (selSet.has(node.id)) continue;
+        const bb = getBBoxForId(node.id);
+        if (!bb) continue;
+        snapX.push(bb.x, bb.x + bb.width / 2, bb.x + bb.width);
+        snapY.push(bb.y, bb.y + bb.height / 2, bb.y + bb.height);
+      }
+      const avb = document.viewBox;
+      snapX.push(avb.x, avb.x + avb.width / 2, avb.x + avb.width);
+      snapY.push(avb.y, avb.y + avb.height / 2, avb.y + avb.height);
+
+      // Ruler guides are snap targets too.
+      for (const g of useUIStore.getState().guides) {
+        if (g.axis === "x") snapX.push(g.pos);
+        else snapY.push(g.pos);
+      }
+
       const PAD = 3 / zoom;
       dragRef.current = {
         mode,
         startDocPos: screenToDoc(e.clientX, e.clientY),
+        startClient: { x: e.clientX, y: e.clientY },
+        moved: false,
+        batchStarted: false,
+        shiftKey: e.shiftKey,
         originalTransforms,
         originalBBox: ob,
+        snapX,
+        snapY,
         corners: [
           { x: ob.x - PAD,            y: ob.y - PAD },             // 0 tl
           { x: ob.x + ob.width + PAD, y: ob.y - PAD },             // 1 tr
@@ -155,14 +197,8 @@ export const SelectionOverlay = memo(function SelectionOverlay({
       // Capture on the element that received pointerdown so move/up bubble to SVG
       (e.currentTarget as SVGElement).setPointerCapture(e.pointerId);
 
-      // Snapshot pre-drag state into history BEFORE pausing so this drag
-      // becomes its own undo entry (resume() alone doesn't create one).
-      const { pastStates } = useDocumentStore.temporal.getState();
-      useDocumentStore.temporal.setState({
-        pastStates: [...pastStates, { document: useDocumentStore.getState().document }],
-        futureStates: [],
-      });
-      useDocumentStore.temporal.getState().pause();
+      // Undo batch is deferred to the first real movement (onPointerMove); a
+      // plain click on the move-rect reselects rather than logging an empty step.
     },
     [selectedIds, document, zoom, screenToDoc]
   );
@@ -174,14 +210,61 @@ export const SelectionOverlay = memo(function SelectionOverlay({
       const dr = dragRef.current;
       if (!dr) return;
 
+      // Distinguish a click from a drag: ignore sub-threshold jitter, and open
+      // the undo batch only once a real drag begins.
+      if (!dr.moved) {
+        if (Math.hypot(e.clientX - dr.startClient.x, e.clientY - dr.startClient.y) < 4) {
+          return;
+        }
+        dr.moved = true;
+        beginUndoBatch();
+        dr.batchStarted = true;
+      }
+
       const docPos = screenToDoc(e.clientX, e.clientY);
       const dx = docPos.x - dr.startDocPos.x;
       const dy = docPos.y - dr.startDocPos.y;
 
       if (dr.mode === "move") {
+        // Snap the moved bbox's edges/centers to nearby targets (Alt bypasses).
+        let sdx = dx, sdy = dy;
+        let gx: number | null = null, gy: number | null = null;
+        if (!e.altKey) {
+          const ob = dr.originalBBox;
+          const THRESH = 6 / zoom;
+          const xCand = [ob.x + dx, ob.x + dx + ob.width / 2, ob.x + dx + ob.width];
+          let bestX = THRESH;
+          for (const c of xCand) for (const t of dr.snapX) {
+            const d2 = Math.abs(c - t);
+            if (d2 < bestX) { bestX = d2; sdx = dx + (t - c); gx = t; }
+          }
+          const yCand = [ob.y + dy, ob.y + dy + ob.height / 2, ob.y + dy + ob.height];
+          let bestY = THRESH;
+          for (const c of yCand) for (const t of dr.snapY) {
+            const d2 = Math.abs(c - t);
+            if (d2 < bestY) { bestY = d2; sdy = dy + (t - c); gy = t; }
+          }
+        }
         for (const id of selectedIds) {
           const orig = dr.originalTransforms[id];
-          const t = `translate(${fmt(dx)} ${fmt(dy)})${orig ? " " + orig : ""}`;
+          const t = `translate(${fmt(sdx)} ${fmt(sdy)})${orig ? " " + orig : ""}`;
+          updateNodeAttributes(id, { transform: t });
+        }
+        setGuides({ x: gx, y: gy });
+        return;
+      }
+
+      if (dr.mode === "rotate") {
+        const ob = dr.originalBBox;
+        const cx = ob.x + ob.width / 2;
+        const cy = ob.y + ob.height / 2;
+        const a0 = Math.atan2(dr.startDocPos.y - cy, dr.startDocPos.x - cx);
+        const a1 = Math.atan2(docPos.y - cy, docPos.x - cx);
+        let deg = ((a1 - a0) * 180) / Math.PI;
+        if (e.shiftKey) deg = Math.round(deg / 15) * 15; // snap to 15°
+        for (const id of selectedIds) {
+          const orig = dr.originalTransforms[id];
+          const t = `rotate(${fmt(deg)} ${fmt(cx)} ${fmt(cy)})${orig ? " " + orig : ""}`;
           updateNodeAttributes(id, { transform: t });
         }
         return;
@@ -210,13 +293,31 @@ export const SelectionOverlay = memo(function SelectionOverlay({
     [selectedIds, updateNodeAttributes, screenToDoc, zoom]
   );
 
-  // ── Pointer up: consolidate transform to single matrix ───────────────────
+  // ── Pointer up: reselect (click) or consolidate transform (drag) ─────────
 
-  const onPointerUp = useCallback(() => {
-    if (!dragRef.current) return;
+  const onPointerUp = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
+    const dr = dragRef.current;
+    if (!dr) return;
     dragRef.current = null;
+    setGuides({ x: null, y: null });
 
-    // Consolidate compound transforms into a single matrix per element
+    if (!dr.moved) {
+      // It was a click, not a drag. For the move-rect body, fall through to the
+      // element under the cursor so elements *inside* the selection bbox can be
+      // picked. (Handle clicks with no drag do nothing.)
+      if (dr.mode === "move") {
+        const id = topNodeUnderPoint(e.clientX, e.clientY);
+        if (id) {
+          if (dr.shiftKey) addToSelection(id);
+          else select([id]);
+        } else {
+          clearSelection();
+        }
+      }
+      return;
+    }
+
+    // A real drag: consolidate compound transforms into a single matrix.
     for (const id of selectedIds) {
       const el = canvasRegistry.get(id) as SVGGraphicsElement | undefined;
       if (!el) continue;
@@ -233,8 +334,8 @@ export const SelectionOverlay = memo(function SelectionOverlay({
       } catch { /* ignore */ }
     }
 
-    useDocumentStore.temporal.getState().resume();
-  }, [selectedIds, updateNodeAttributes]);
+    if (dr.batchStarted) endUndoBatch();
+  }, [selectedIds, updateNodeAttributes, select, addToSelection, clearSelection]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -312,6 +413,38 @@ export const SelectionOverlay = memo(function SelectionOverlay({
           onPointerDown={(e) => beginDrag(e, `resize-${i}` as DragMode)}
         />
       ))}
+
+      {/* ── Smart guides (snap alignment lines) ────────────────────────── */}
+      {guides.x !== null && (
+        <line
+          x1={guides.x} y1={vb.y} x2={guides.x} y2={vb.y + vb.height}
+          stroke="#ec4899" strokeWidth={STROKE} style={{ pointerEvents: "none" }}
+        />
+      )}
+      {guides.y !== null && (
+        <line
+          x1={vb.x} y1={guides.y} x2={vb.x + vb.width} y2={guides.y}
+          stroke="#ec4899" strokeWidth={STROKE} style={{ pointerEvents: "none" }}
+        />
+      )}
+
+      {/* ── Rotate handle (above top-center) ───────────────────────────── */}
+      {ub && (
+        <>
+          <line
+            x1={ub.x + ub.width / 2} y1={ub.y - PAD}
+            x2={ub.x + ub.width / 2} y2={ub.y - PAD - 24 / zoom}
+            stroke="#0ea5e9" strokeWidth={STROKE}
+          />
+          <circle
+            cx={ub.x + ub.width / 2} cy={ub.y - PAD - 24 / zoom}
+            r={HANDLE * 0.7}
+            fill="#1e1e1e" stroke="#0ea5e9" strokeWidth={STROKE}
+            style={{ pointerEvents: "all", cursor: "grab" }}
+            onPointerDown={(e) => beginDrag(e, "rotate")}
+          />
+        </>
+      )}
     </svg>
   );
 });

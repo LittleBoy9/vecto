@@ -5,6 +5,11 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** Filename from a path — handles both / (mac/linux) and \ (windows) separators. */
+export function basename(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
 /**
  * Resolve any CSS color value (named, rgb(), hsl(), hex) to a lowercase hex
  * string. Uses a 1×1 canvas so the browser does the normalization.

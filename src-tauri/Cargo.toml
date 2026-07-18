@@ -19,6 +19,9 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 futures-util = "0.3"
 thiserror = "2"
 resvg = "0.43"
+vtracer = "0.6"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+svg2pdf = "0.12"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -26,6 +26,11 @@ export interface CanvasManagerOptions {
    * Also called on pan end (debounced 80 ms) for the zoom indicator.
    */
   onTransformCommit: (zoom: number, panX: number, panY: number) => void;
+  /**
+   * Fired on EVERY transform change (each pan/zoom frame, not debounced) so
+   * non-React chrome (rulers) can redraw in lock-step with the viewport.
+   */
+  onViewportChange?: (zoom: number, panX: number, panY: number) => void;
 }
 
 export class CanvasManager {
@@ -77,13 +82,32 @@ export class CanvasManager {
    * Returns the new transform so callers can sync the store immediately.
    */
   fitToView(docWidth: number, docHeight: number) {
+    return this.fitRect(0, 0, docWidth, docHeight);
+  }
+
+  /** Set an absolute zoom level, keeping the viewport center fixed. */
+  zoomTo(newZoom: number) {
     const rect = this.container.getBoundingClientRect();
-    const margin = 0.9;
-    const scaleX = (rect.width * margin) / docWidth;
-    const scaleY = (rect.height * margin) / docHeight;
-    this.zoom = Math.min(scaleX, scaleY, 2);
-    this.panX = (rect.width - docWidth * this.zoom) / 2;
-    this.panY = (rect.height - docHeight * this.zoom) / 2;
+    const cx = rect.width / 2, cy = rect.height / 2;
+    const z = Math.min(Math.max(newZoom, 0.05), 32);
+    const ratio = z / this.zoom;
+    this.panX = cx - ratio * (cx - this.panX);
+    this.panY = cy - ratio * (cy - this.panY);
+    this.zoom = z;
+    this.applyTransform();
+    return { zoom: this.zoom, panX: this.panX, panY: this.panY };
+  }
+
+  /** Fit an arbitrary document-space rect into the viewport (zoom-to-selection). */
+  fitRect(x: number, y: number, w: number, h: number, maxZoom = 2) {
+    const rect = this.container.getBoundingClientRect();
+    const margin = 0.85;
+    if (w <= 0 || h <= 0) return { zoom: this.zoom, panX: this.panX, panY: this.panY };
+    const scaleX = (rect.width * margin) / w;
+    const scaleY = (rect.height * margin) / h;
+    this.zoom = Math.min(scaleX, scaleY, maxZoom);
+    this.panX = (rect.width - w * this.zoom) / 2 - x * this.zoom;
+    this.panY = (rect.height - h * this.zoom) / 2 - y * this.zoom;
     this.applyTransform();
     return { zoom: this.zoom, panX: this.panX, panY: this.panY };
   }
@@ -107,6 +131,7 @@ export class CanvasManager {
   /** Pan only — no scale. Zoom is expressed via SVG width/height in React. */
   private applyTransform() {
     this.viewport.style.transform = `translate(${this.panX}px, ${this.panY}px)`;
+    this.options.onViewportChange?.(this.zoom, this.panX, this.panY);
   }
 
   private handleWheel = (e: WheelEvent) => {

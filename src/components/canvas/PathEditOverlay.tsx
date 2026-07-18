@@ -19,7 +19,7 @@ import {
   insertNodeInContours,
 } from "../../lib/pathParser";
 import type { PathContour } from "../../lib/pathParser";
-import { useDocumentStore } from "../../store/documentStore";
+import { useDocumentStore, beginUndoBatch, endUndoBatch } from "../../store/documentStore";
 import { usePathEditStore } from "../../store/pathEditStore";
 import type { VectoDocument, VectoNode } from "../../types/svg";
 
@@ -121,13 +121,8 @@ export const PathEditOverlay = memo(function PathEditOverlay({
       if (e.shiftKey) addNodeToSelection(anchorId);
       else selectNodes([anchorId]);
 
-      // Snapshot pre-drag state before pausing so this drag is its own undo entry
-      const { pastStates } = useDocumentStore.temporal.getState();
-      useDocumentStore.temporal.setState({
-        pastStates: [...pastStates, { document: useDocumentStore.getState().document }],
-        futureStates: [],
-      });
-      useDocumentStore.temporal.getState().pause();
+      // Whole drag = one undo entry.
+      beginUndoBatch();
 
       dragRef.current = {
         target,
@@ -182,7 +177,7 @@ export const PathEditOverlay = memo(function PathEditOverlay({
   const onPointerUp = useCallback(() => {
     if (!dragRef.current) return;
     dragRef.current = null;
-    useDocumentStore.temporal.getState().resume();
+    endUndoBatch();
   }, []);
 
   // ── Anchor double-click: toggle smooth ↔ corner ───────────────────────────

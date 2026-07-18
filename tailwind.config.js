@@ -4,19 +4,22 @@ export default {
   theme: {
     extend: {
       colors: {
-        canvas: "#141414",
-        panel: "#1e1e1e",
-        surface: "#2a2a2a",
-        "surface-hover": "#333333",
-        border: "#333333",
-        "border-subtle": "#272727",
-        "text-primary": "#e5e5e5",
-        "text-secondary": "#888888",
-        "text-muted": "#555555",
-        accent: "#0ea5e9",
-        "accent-hover": "#38bdf8",
-        "accent-dim": "rgba(14,165,233,0.15)",
-        danger: "#ef4444",
+        // Channel-based vars (see index.css) so opacity modifiers like
+        // `bg-accent/40` still work. Values switch with the .light / .dark class.
+        canvas: "rgb(var(--color-canvas) / <alpha-value>)",
+        panel: "rgb(var(--color-panel) / <alpha-value>)",
+        surface: "rgb(var(--color-surface) / <alpha-value>)",
+        "surface-hover": "rgb(var(--color-surface-hover) / <alpha-value>)",
+        border: "rgb(var(--color-border) / <alpha-value>)",
+        "border-subtle": "rgb(var(--color-border-subtle) / <alpha-value>)",
+        "text-primary": "rgb(var(--color-text-primary) / <alpha-value>)",
+        "text-secondary": "rgb(var(--color-text-secondary) / <alpha-value>)",
+        "text-muted": "rgb(var(--color-text-muted) / <alpha-value>)",
+        accent: "rgb(var(--color-accent) / <alpha-value>)",
+        "accent-hover": "rgb(var(--color-accent-hover) / <alpha-value>)",
+        // Pre-blended translucent accent (no opacity modifier used on it)
+        "accent-dim": "var(--color-accent-dim)",
+        danger: "rgb(var(--color-danger) / <alpha-value>)",
       },
       fontFamily: {
         sans: ["-apple-system", "BlinkMacSystemFont", "Inter", "sans-serif"],

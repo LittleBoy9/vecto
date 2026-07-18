@@ -31,32 +31,69 @@ fn user_message(prompt: &str) -> String {
     )
 }
 
-// ── Non-streaming fallback (Anthropic only) ───────────────────────────────────
+// ── Non-streaming (single request) ────────────────────────────────────────────
 
-#[tauri::command]
-pub async fn generate_svg(prompt: String, api_key: String) -> Result<String, String> {
-    if api_key.trim().is_empty() {
-        return Err("No API key set. Add your Anthropic API key in Settings.".to_string());
-    }
-
+/// One non-streaming completion → extracted `<svg>` string. Used by the
+/// single-shot generate and by the variants fan-out.
+async fn generate_once(
+    provider: &str,
+    model: &str,
+    system: &str,
+    user: String,
+    api_key: &str,
+) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "model": "claude-sonnet-4-6",
-        "max_tokens": 8000,
-        "system": SYSTEM_PROMPT,
-        "messages": [{ "role": "user", "content": user_message(&prompt) }]
-    });
 
-    let response = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", api_key.trim())
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {e}"))?;
+    let (request, point_to_text): (reqwest::RequestBuilder, fn(&serde_json::Value) -> Option<&str>) =
+        match provider {
+            "anthropic" => (
+                client
+                    .post("https://api.anthropic.com/v1/messages")
+                    .header("x-api-key", api_key.trim())
+                    .header("anthropic-version", "2023-06-01")
+                    .header("content-type", "application/json")
+                    .json(&serde_json::json!({
+                        "model": model,
+                        "max_tokens": 8000,
+                        "system": system,
+                        "messages": [{ "role": "user", "content": user }]
+                    })),
+                |j| j["content"][0]["text"].as_str(),
+            ),
+            "openai" => (
+                client
+                    .post("https://api.openai.com/v1/chat/completions")
+                    .header("Authorization", format!("Bearer {}", api_key.trim()))
+                    .header("content-type", "application/json")
+                    .json(&serde_json::json!({
+                        "model": model,
+                        "max_tokens": 4096,
+                        "messages": [
+                            { "role": "system", "content": system },
+                            { "role": "user",   "content": user }
+                        ]
+                    })),
+                |j| j["choices"][0]["message"]["content"].as_str(),
+            ),
+            "gemini" => (
+                client
+                    .post(format!(
+                        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+                        model.trim(),
+                        api_key.trim()
+                    ))
+                    .header("content-type", "application/json")
+                    .json(&serde_json::json!({
+                        "systemInstruction": { "parts": [{ "text": system }] },
+                        "contents": [{ "role": "user", "parts": [{ "text": user }] }],
+                        "generationConfig": { "maxOutputTokens": 8192 }
+                    })),
+                |j| j["candidates"][0]["content"]["parts"][0]["text"].as_str(),
+            ),
+            _ => return Err(format!("Unknown provider: {provider}")),
+        };
 
+    let response = request.send().await.map_err(|e| format!("Network error: {e}"))?;
     let status = response.status();
     let json: serde_json::Value = response
         .json()
@@ -65,33 +102,117 @@ pub async fn generate_svg(prompt: String, api_key: String) -> Result<String, Str
 
     if !status.is_success() {
         let msg = json["error"]["message"].as_str().unwrap_or("Unknown API error");
-        return Err(format!("Claude API error ({status}): {msg}"));
+        return Err(format!("API error ({status}): {msg}"));
     }
 
-    let raw = json["content"][0]["text"].as_str().ok_or("Empty response from Claude")?;
-    extract_svg(raw)
-        .ok_or_else(|| "Claude did not return valid SVG markup. Try rephrasing your prompt.".to_string())
+    let raw = point_to_text(&json).ok_or("Empty response from the model")?;
+    extract_svg(raw).ok_or_else(|| "The model did not return valid SVG markup.".to_string())
 }
 
-// ── Streaming (all providers) ─────────────────────────────────────────────────
+#[tauri::command]
+pub async fn generate_svg(prompt: String, api_key: String) -> Result<String, String> {
+    if api_key.trim().is_empty() {
+        return Err("No API key set. Add your API key in Settings.".to_string());
+    }
+    generate_once("anthropic", "claude-sonnet-4-6", SYSTEM_PROMPT, user_message(&prompt), &api_key).await
+}
+
+/// Generate several independent SVG variants of the same prompt, concurrently.
+#[tauri::command]
+pub async fn generate_svg_variants(
+    prompt: String,
+    api_key: String,
+    provider: String,
+    model: String,
+    count: u32,
+) -> Result<Vec<String>, String> {
+    if api_key.trim().is_empty() {
+        return Err(format!("No API key set for {}. Add it in Settings.", provider));
+    }
+    let n = count.clamp(1, 6);
+    let user = user_message(&prompt);
+    let tasks = (0..n).map(|_| generate_once(&provider, &model, SYSTEM_PROMPT, user.clone(), &api_key));
+    let results = futures_util::future::join_all(tasks).await;
+
+    let svgs: Vec<String> = results.into_iter().filter_map(Result::ok).collect();
+    if svgs.is_empty() {
+        return Err("No variants were generated. Check your API key and try again.".to_string());
+    }
+    Ok(svgs)
+}
+
+// ── Edit prompt (selection-scoped AI edit) ────────────────────────────────────
+
+const EDIT_SYSTEM_PROMPT: &str = r#"You are an expert SVG editor. You receive an SVG fragment and an instruction describing a change. Apply ONLY the requested change and return the COMPLETE edited SVG.
+
+RULES — follow every one precisely:
+1. Output ONLY raw SVG — start with `<svg` and end with `</svg>`. No markdown fences, no explanation.
+2. Keep the same viewBox. Keep every element's `id` attribute EXACTLY as given — even on elements you modify — so they can be matched back. Return the SAME number of top-level elements with the SAME ids; do not add, remove, split, or merge elements. Preserve elements you are not asked to change.
+3. Use ONLY presentation attributes (fill, stroke, stroke-width, opacity, transform, etc.). No <style> blocks, no CSS classes, no inline style="".
+4. Keep coordinates absolute and path data clean.
+5. Return the same set of top-level elements you were given, with the instruction applied — do not add an outer wrapper group unless explicitly asked.
+6. Gradients: if a <defs> with gradients is given, keep it (same ids) and the fill="url(#id)" references. You MAY edit gradient stops/colors, or add a new <defs> gradient and reference it, when that fulfils the instruction."#;
+
+fn edit_user_message(instruction: &str, svg: &str) -> String {
+    format!(
+        "Here is the current SVG:\n\n{}\n\nInstruction: {}\n\nReturn the COMPLETE edited SVG, starting with <svg and ending with </svg>.",
+        svg.trim(),
+        instruction.trim()
+    )
+}
+
+// ── Streaming commands ────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn generate_svg_stream(
     prompt: String,
     api_key: String,
     provider: String,
+    model: String,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     if api_key.trim().is_empty() {
-        return Err(format!(
-            "No API key set for {}. Add it in Settings.",
-            provider
-        ));
+        return Err(format!("No API key set for {}. Add it in Settings.", provider));
     }
-    match provider.as_str() {
-        "anthropic" => stream_anthropic(prompt, api_key, app_handle).await,
-        "openai"    => stream_openai(prompt, api_key, app_handle).await,
-        "gemini"    => stream_gemini(prompt, api_key, app_handle).await,
+    stream_provider(
+        &provider, &model, SYSTEM_PROMPT, user_message(&prompt), api_key, app_handle, "svg:chunk",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn edit_svg_stream(
+    instruction: String,
+    svg: String,
+    api_key: String,
+    provider: String,
+    model: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    if api_key.trim().is_empty() {
+        return Err(format!("No API key set for {}. Add it in Settings.", provider));
+    }
+    stream_provider(
+        &provider, &model, EDIT_SYSTEM_PROMPT, edit_user_message(&instruction, &svg),
+        api_key, app_handle, "svg:edit-chunk",
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn stream_provider(
+    provider: &str,
+    model: &str,
+    system: &str,
+    user: String,
+    api_key: String,
+    app_handle: tauri::AppHandle,
+    event: &'static str,
+) -> Result<(), String> {
+    match provider {
+        "anthropic" => stream_anthropic(model, system, user, api_key, app_handle, event).await,
+        "openai"    => stream_openai(model, system, user, api_key, app_handle, event).await,
+        "gemini"    => stream_gemini(model, system, user, api_key, app_handle, event).await,
         _           => Err(format!("Unknown provider: {provider}")),
     }
 }
@@ -99,17 +220,20 @@ pub async fn generate_svg_stream(
 // ── Anthropic ─────────────────────────────────────────────────────────────────
 
 async fn stream_anthropic(
-    prompt: String,
+    model: &str,
+    system: &str,
+    user: String,
     api_key: String,
     app_handle: tauri::AppHandle,
+    event: &'static str,
 ) -> Result<(), String> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
-        "model": "claude-sonnet-4-6",
+        "model": model,
         "max_tokens": 8000,
         "stream": true,
-        "system": SYSTEM_PROMPT,
-        "messages": [{ "role": "user", "content": user_message(&prompt) }]
+        "system": system,
+        "messages": [{ "role": "user", "content": user }]
     });
 
     let response = client
@@ -126,7 +250,7 @@ async fn stream_anthropic(
         json["error"]["message"].as_str().unwrap_or("Unknown error").to_string()
     })
     .await?
-    .pipe_sse(app_handle, |json| {
+    .pipe_sse(app_handle, event, |json| {
         if json["type"] == "content_block_delta" && json["delta"]["type"] == "text_delta" {
             json["delta"]["text"].as_str().map(str::to_string)
         } else {
@@ -139,18 +263,21 @@ async fn stream_anthropic(
 // ── OpenAI ────────────────────────────────────────────────────────────────────
 
 async fn stream_openai(
-    prompt: String,
+    model: &str,
+    system: &str,
+    user: String,
     api_key: String,
     app_handle: tauri::AppHandle,
+    event: &'static str,
 ) -> Result<(), String> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
-        "model": "gpt-4o",
+        "model": model,
         "max_tokens": 4096,
         "stream": true,
         "messages": [
-            { "role": "system", "content": SYSTEM_PROMPT },
-            { "role": "user",   "content": user_message(&prompt) }
+            { "role": "system", "content": system },
+            { "role": "user",   "content": user }
         ]
     });
 
@@ -167,7 +294,7 @@ async fn stream_openai(
         json["error"]["message"].as_str().unwrap_or("Unknown error").to_string()
     })
     .await?
-    .pipe_sse(app_handle, |json| {
+    .pipe_sse(app_handle, event, |json| {
         json["choices"][0]["delta"]["content"].as_str().map(str::to_string)
     })
     .await
@@ -176,18 +303,22 @@ async fn stream_openai(
 // ── Gemini ────────────────────────────────────────────────────────────────────
 
 async fn stream_gemini(
-    prompt: String,
+    model: &str,
+    system: &str,
+    user: String,
     api_key: String,
     app_handle: tauri::AppHandle,
+    event: &'static str,
 ) -> Result<(), String> {
     let client = reqwest::Client::new();
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse&key={}",
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
+        model.trim(),
         api_key.trim()
     );
     let body = serde_json::json!({
-        "systemInstruction": { "parts": [{ "text": SYSTEM_PROMPT }] },
-        "contents": [{ "role": "user", "parts": [{ "text": user_message(&prompt) }] }],
+        "systemInstruction": { "parts": [{ "text": system }] },
+        "contents": [{ "role": "user", "parts": [{ "text": user }] }],
         "generationConfig": { "maxOutputTokens": 8192 }
     });
 
@@ -203,7 +334,7 @@ async fn stream_gemini(
         json["error"]["message"].as_str().unwrap_or("Unknown error").to_string()
     })
     .await?
-    .pipe_sse(app_handle, |json| {
+    .pipe_sse(app_handle, event, |json| {
         json["candidates"][0]["content"]["parts"][0]["text"]
             .as_str()
             .map(str::to_string)
@@ -237,6 +368,7 @@ impl StreamingResponse {
     async fn pipe_sse(
         self,
         app_handle: tauri::AppHandle,
+        event: &'static str,
         extract_text: impl Fn(&serde_json::Value) -> Option<String>,
     ) -> Result<(), String> {
         let mut stream = self.0.bytes_stream();
@@ -261,8 +393,17 @@ impl StreamingResponse {
                             return Ok(());
                         }
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                            // An error event can arrive after a 200 OK (overload,
+                            // rate limit mid-stream). Surface it instead of hanging
+                            // on a half-finished render.
+                            if json["type"] == "error" || json["error"].is_object() {
+                                let msg = json["error"]["message"]
+                                    .as_str()
+                                    .unwrap_or("stream error");
+                                return Err(format!("API stream error: {msg}"));
+                            }
                             if let Some(text) = extract_text(&json) {
-                                let _ = app_handle.emit("svg:chunk", text);
+                                let _ = app_handle.emit(event, text);
                             }
                         }
                     }

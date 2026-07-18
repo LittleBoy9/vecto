@@ -1,17 +1,20 @@
 import { useCallback, useRef, useState } from "react";
 import { useDocumentStore } from "../../store/documentStore";
+import { usePanelStore } from "../../store/panelStore";
 import { LayerNode } from "./LayerNode";
 
 const MIN_WIDTH = 140;
 const MAX_WIDTH = 400;
-const DEFAULT_WIDTH = 208; // 52 * 4
 
 export function LayerPanel() {
   const document = useDocumentStore((s) => s.document);
-  const [width, setWidth] = useState(DEFAULT_WIDTH);
+  const storedWidth = usePanelStore((s) => s.leftWidth);
+  const commitWidth = usePanelStore((s) => s.setLeftWidth);
+  const [width, setWidth] = useState(storedWidth);
 
   // ── Resize handle (right edge) ───────────────────────────────────────────────
   const startRef = useRef({ x: 0, width: 0 });
+  const latestRef = useRef(width);
 
   const handleResizeDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -22,15 +25,17 @@ export function LayerPanel() {
         MAX_WIDTH,
         Math.max(MIN_WIDTH, startRef.current.width + (ev.clientX - startRef.current.x))
       );
+      latestRef.current = next;
       setWidth(next);
     };
     const onUp = () => {
+      commitWidth(latestRef.current); // persist only on release
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
-  }, [width]);
+  }, [width, commitWidth]);
 
   return (
     <aside

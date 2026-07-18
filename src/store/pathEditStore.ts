@@ -1,4 +1,7 @@
 import { create } from "zustand";
+import { useDocumentStore } from "./documentStore";
+import { useSelectionStore } from "./selectionStore";
+import { findNode } from "../lib/nodeUtils";
 
 export interface SelectedNodeKey {
   contourIdx: number;
@@ -43,3 +46,23 @@ export const usePathEditStore = create<PathEditState & PathEditActions>(
     clearNodeSelection: () => set({ selectedNodeIds: [] }),
   })
 );
+
+/** True if a node is an editable path (has a `d` attribute). */
+export function isEditablePath(tagName: string, attrs: Record<string, string>) {
+  return tagName === "path" && !!attrs.d;
+}
+
+/**
+ * Begin node-editing whatever path is currently selected, if exactly one path
+ * is selected. Lets the ◈ toolbar button / N key actually enter the editor
+ * instead of only double-click.
+ */
+export function startNodeEditForSelectedPath() {
+  const sel = useSelectionStore.getState().selectedIds;
+  const doc = useDocumentStore.getState().document;
+  if (sel.length !== 1 || !doc) return;
+  const node = findNode(doc.nodes, sel[0]);
+  if (node && isEditablePath(node.tagName, node.attributes)) {
+    usePathEditStore.getState().startEditing(sel[0]);
+  }
+}

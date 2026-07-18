@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useSettingsStore, type Provider } from "../../store/settingsStore";
+import { useSettingsStore, PROVIDER_MODELS, type Provider } from "../../store/settingsStore";
 import { cn } from "../../lib/utils";
 
 // ── Provider config ───────────────────────────────────────────────────────────
@@ -43,7 +43,8 @@ export function SettingsModal() {
   const {
     provider, settingsOpen,
     anthropicKey, openaiKey, geminiKey,
-    setProvider, setAnthropicKey, setOpenaiKey, setGeminiKey,
+    anthropicModel, openaiModel, geminiModel,
+    setProvider, setAnthropicKey, setOpenaiKey, setGeminiKey, setModel,
     closeSettings,
   } = useSettingsStore();
 
@@ -85,6 +86,8 @@ export function SettingsModal() {
   };
 
   const cfg = PROVIDERS.find((p) => p.id === activeTab)!;
+  const currentModel = activeTab === "openai" ? openaiModel : activeTab === "gemini" ? geminiModel : anthropicModel;
+  const modelOptions = PROVIDER_MODELS[activeTab];
   const isKeySet = currentDraft.trim().length > 8;
   const savedKeys = { anthropic: anthropicKey, openai: openaiKey, gemini: geminiKey };
   const maskKey = (k: string) =>
@@ -190,6 +193,33 @@ export function SettingsModal() {
                   </span>
                 </p>
               )}
+            </div>
+
+            {/* Model selector */}
+            <div className="space-y-2">
+              <label className="block text-xs font-medium text-text-secondary uppercase tracking-wide">
+                Model
+              </label>
+              <select
+                value={modelOptions.some((m) => m.id === currentModel) ? currentModel : "__custom"}
+                onChange={(e) => { if (e.target.value !== "__custom") setModel(activeTab, e.target.value); }}
+                className="w-full bg-surface border border-border rounded-md px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent appearance-none cursor-pointer"
+              >
+                {modelOptions.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+                <option value="__custom">Custom…</option>
+              </select>
+              <input
+                value={currentModel}
+                onChange={(e) => setModel(activeTab, e.target.value)}
+                spellCheck={false}
+                placeholder="exact model id"
+                className="w-full bg-surface border border-border rounded-md px-3 py-1.5 text-[12px] text-text-secondary focus:outline-none focus:border-accent font-mono"
+              />
+              <p className="text-[10px] text-text-muted">
+                Pick a preset or type any model id your key has access to.
+              </p>
             </div>
 
             {/* How to get a key */}

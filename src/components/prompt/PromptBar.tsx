@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { parseSVG } from "../../lib/svgParser";
-import { useDocumentStore } from "../../store/documentStore";
+import { useDocumentStore, beginUndoBatch, endUndoBatch } from "../../store/documentStore";
 import type { VectoDocument } from "../../types/svg";
 import { useSelectionStore } from "../../store/selectionStore";
 import { useUIStore } from "../../store/uiStore";
-import { useSettingsStore, activeKey } from "../../store/settingsStore";
+import { useSettingsStore, activeKey, activeModel, PROVIDER_MODELS, type Provider } from "../../store/settingsStore";
+import { extractSvg, extractPartialSvg } from "../../lib/svgExtract";
 import { cn } from "../../lib/utils";
 
 const MAX_CHARS = 4000;
@@ -17,6 +18,7 @@ interface UseGenerateOptions {
   prompt: string;
   apiKey: string;
   provider: string;
+  model: string;
   hasKey: boolean;
   openSettings: () => void;
   isGenerating: boolean;
@@ -26,32 +28,11 @@ interface UseGenerateOptions {
   onError: (msg: string | null) => void;
 }
 
-/** Find the complete <svg>...</svg> block in accumulated text. */
-function extractSvg(text: string): string | null {
-  const start = text.indexOf("<svg");
-  if (start === -1) return null;
-  const end = text.lastIndexOf("</svg>");
-  if (end === -1 || end < start) return null;
-  return text.slice(start, end + "</svg>".length);
-}
-
-/**
- * Extract whatever SVG we have so far — close the tag artificially if the
- * stream hasn't finished yet so the browser can attempt a render.
- */
-function extractPartialSvg(text: string): string | null {
-  const start = text.indexOf("<svg");
-  if (start === -1) return null;
-  const end = text.lastIndexOf("</svg>");
-  if (end !== -1) return text.slice(start, end + "</svg>".length);
-  // Partial: close it so the SVG parser has something valid to attempt
-  return text.slice(start) + "</svg>";
-}
-
 async function runGenerate({
   prompt,
   apiKey,
   provider,
+  model,
   hasKey,
   openSettings,
   isGenerating,
@@ -72,17 +53,21 @@ async function runGenerate({
   setGenerating(true);
   clearSelection();
 
-  // Snapshot pre-stream state into history BEFORE pausing so AI generation
-  // becomes its own undo entry (resume() alone doesn't create one).
-  const { pastStates } = useDocumentStore.temporal.getState();
-  useDocumentStore.temporal.setState({
-    pastStates: [...pastStates, { document: useDocumentStore.getState().document }],
-    futureStates: [],
-  });
-  useDocumentStore.temporal.getState().pause();
+  // Whole generation (all streamed partials + final) = one undo entry.
+  beginUndoBatch();
 
   const accumulated = { text: "" };
   let lastRenderMs = 0;
+  // Reuse one stable doc id across every partial parse. parseSVG mints a fresh
+  // id per call, and the canvas re-fits the view whenever the id changes — so
+  // without this the artwork would jump on every streamed chunk.
+  const streamDocId = crypto.randomUUID();
+
+  const render = (svg: string) => {
+    const doc = parseSVG(svg);
+    doc.id = streamDocId;
+    setDocument(doc);
+  };
 
   const unlisten = await listen<string>("svg:chunk", (event) => {
     accumulated.text += event.payload;
@@ -95,19 +80,19 @@ async function runGenerate({
     const partial = extractPartialSvg(accumulated.text);
     if (!partial) return;
     try {
-      setDocument(parseSVG(partial));
+      render(partial);
     } catch {
       // Ignore — partial SVG may be temporarily malformed mid-stream
     }
   });
 
   try {
-    await invoke("generate_svg_stream", { prompt: trimmed, apiKey, provider });
+    await invoke("generate_svg_stream", { prompt: trimmed, apiKey, provider, model });
 
     // Final authoritative render from the complete response
     const final = extractSvg(accumulated.text);
     if (final) {
-      setDocument(parseSVG(final));
+      render(final);
     } else if (!accumulated.text.includes("<svg")) {
       onError("Claude did not return valid SVG markup. Try rephrasing your prompt.");
     }
@@ -115,7 +100,7 @@ async function runGenerate({
     onError(String(err));
   } finally {
     unlisten();
-    useDocumentStore.temporal.getState().resume();
+    endUndoBatch();
     setGenerating(false);
   }
 }
@@ -284,12 +269,109 @@ function ExpandModal({
   );
 }
 
+// ── Variant picker ────────────────────────────────────────────────────────────
+
+interface VariantTrayProps {
+  svgs: string[];
+  busy: boolean;
+  count: number;
+  onPick: (svg: string) => void;
+  onClose: () => void;
+  onRegenerate: () => void;
+}
+
+function VariantTray({ svgs, busy, count, onPick, onClose, onRegenerate }: VariantTrayProps) {
+  const slots = busy && svgs.length === 0 ? Array.from({ length: count }) : svgs;
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/60 z-40" onClick={onClose} />
+      <div className="fixed inset-0 flex items-center justify-center z-50 p-6 pointer-events-none">
+        <div
+          className="pointer-events-auto w-full max-w-3xl bg-panel border border-border rounded-xl shadow-2xl flex flex-col"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+            <span className="text-text-secondary text-xs font-medium uppercase tracking-wide">
+              {busy && svgs.length === 0 ? "Generating variants…" : "Pick a variant"}
+            </span>
+            <button
+              onClick={onClose}
+              className="w-6 h-6 flex items-center justify-center text-text-muted hover:text-text-primary rounded hover:bg-surface transition-colors"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 p-4">
+            {slots.map((svg, i) =>
+              svg ? (
+                <button
+                  key={i}
+                  onClick={() => onPick(svg as string)}
+                  title="Use this variant"
+                  className="group relative aspect-[4/3] bg-canvas rounded-lg border border-border hover:border-accent overflow-hidden transition-colors"
+                >
+                  <img
+                    src={`data:image/svg+xml,${encodeURIComponent(svg as string)}`}
+                    alt={`Variant ${i + 1}`}
+                    className="w-full h-full object-contain p-2"
+                  />
+                  <span className="absolute bottom-1 right-2 text-[10px] text-text-muted group-hover:text-accent">
+                    {i + 1}
+                  </span>
+                </button>
+              ) : (
+                <div
+                  key={i}
+                  className="aspect-[4/3] bg-canvas rounded-lg border border-border flex items-center justify-center"
+                >
+                  <span className="animate-spin text-text-muted">⟳</span>
+                </div>
+              )
+            )}
+          </div>
+
+          <div className="flex items-center justify-end px-4 py-3 border-t border-border">
+            <button
+              onClick={onRegenerate}
+              disabled={busy}
+              className="text-xs text-text-secondary hover:text-text-primary underline disabled:opacity-40"
+            >
+              ↻ Regenerate
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ── Prompt bar (inline, bottom of app) ───────────────────────────────────────
+
+const VARIANT_COUNT = 4;
+
+const STYLE_PRESETS = [
+  { id: "flat", label: "Flat", text: "flat vector illustration, clean solid colors, minimal detail" },
+  { id: "gradient", label: "Gradient", text: "modern gradient style, smooth color transitions" },
+  { id: "3d", label: "3D", text: "3D-style with depth, soft shadows and highlights" },
+  { id: "line", label: "Line art", text: "clean line-art, consistent stroke weight, no fills" },
+  { id: "sticker", label: "Sticker", text: "die-cut sticker style, bold outline, vibrant colors" },
+  { id: "minimal", label: "Minimal", text: "minimalist geometric style, few shapes, negative space" },
+];
 
 export function PromptBar() {
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [variants, setVariants] = useState<string[] | null>(null);
+  const [variantsBusy, setVariantsBusy] = useState(false);
+  const [styleId, setStyleId] = useState<string | null>(null);
+
+  // Prepend the chosen style preset to the prompt before generation.
+  const styled = (p: string) => {
+    const preset = STYLE_PRESETS.find((s) => s.id === styleId);
+    return preset ? `${p.trim()}. Style: ${preset.text}` : p;
+  };
 
   const isGenerating = useUIStore((s) => s.isGenerating);
   const setGenerating = useUIStore((s) => s.setGenerating);
@@ -299,6 +381,9 @@ export function PromptBar() {
   const { openSettings } = settingsState;
   const apiKey = activeKey(settingsState);
   const provider = settingsState.provider;
+  const model = activeModel(settingsState);
+  const modelShort =
+    PROVIDER_MODELS[provider as Provider].find((m) => m.id === model)?.label.split(" — ")[0] ?? model;
 
   const hasKey = apiKey.trim().length > 0;
   const charCount = prompt.length;
@@ -308,6 +393,7 @@ export function PromptBar() {
     prompt,
     apiKey,
     provider,
+    model,
     hasKey,
     openSettings,
     isGenerating,
@@ -318,9 +404,39 @@ export function PromptBar() {
   };
 
   const handleGenerate = () => {
-    runGenerate(generateArgs).then(() => {
+    runGenerate({ ...generateArgs, prompt: styled(prompt) }).then(() => {
       if (expanded) setExpanded(false);
     });
+  };
+
+  const runVariants = async () => {
+    const trimmed = styled(prompt).trim();
+    if (!prompt.trim() || variantsBusy || isGenerating) return;
+    if (!hasKey) { openSettings(); return; }
+    setError(null);
+    setVariants([]);
+    setVariantsBusy(true);
+    try {
+      const svgs = await invoke<string[]>("generate_svg_variants", {
+        prompt: trimmed, apiKey, provider, model, count: VARIANT_COUNT,
+      });
+      setVariants(svgs);
+    } catch (err) {
+      setError(String(err));
+      setVariants(null);
+    } finally {
+      setVariantsBusy(false);
+    }
+  };
+
+  const applyVariant = (svg: string) => {
+    try {
+      setDocument(parseSVG(svg));
+      clearSelection();
+    } catch {
+      setError("That variant couldn't be parsed.");
+    }
+    setVariants(null);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -355,7 +471,26 @@ export function PromptBar() {
           </div>
         )}
 
-        <div className="flex items-start gap-2 px-4 pt-2.5 pb-2">
+        {/* Style preset chips */}
+        <div className="flex items-center gap-1 px-4 pt-2 overflow-x-auto scrollbar-thin">
+          <span className="text-[10px] text-text-muted flex-shrink-0 mr-1">Style:</span>
+          {STYLE_PRESETS.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => setStyleId((id) => (id === s.id ? null : s.id))}
+              className={cn(
+                "flex-shrink-0 px-2 py-0.5 rounded-full text-[10px] border transition-colors",
+                styleId === s.id
+                  ? "bg-accent/15 border-accent text-accent"
+                  : "bg-surface border-border text-text-secondary hover:text-text-primary"
+              )}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-start gap-2 px-4 pt-2 pb-2">
           {/* Spark icon */}
           <span className="text-text-muted text-sm flex-shrink-0 mt-[7px]">✦</span>
 
@@ -406,7 +541,17 @@ export function PromptBar() {
 
           {/* Right column — API key hint + Generate button */}
           <div className="flex flex-col items-end gap-1 flex-shrink-0">
-            {!hasKey && (
+            {hasKey ? (
+              <button
+                onClick={openSettings}
+                title={`${provider} · ${model} — click to change`}
+                className="flex items-center gap-1 text-[10px] text-text-muted hover:text-text-primary transition-colors max-w-[160px]"
+              >
+                <span className="text-accent">✦</span>
+                <span className="truncate">{modelShort}</span>
+                <span className="opacity-60">▾</span>
+              </button>
+            ) : (
               <button
                 onClick={openSettings}
                 className="text-accent hover:text-accent-hover text-[10px] underline"
@@ -414,24 +559,50 @@ export function PromptBar() {
                 Set API key
               </button>
             )}
-            <button
-              onClick={handleGenerate}
-              disabled={isGenerating || !prompt.trim()}
-              className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium",
-                "bg-accent text-white hover:bg-accent-hover",
-                "disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              )}
-            >
-              {isGenerating ? (
-                <><span className="animate-spin inline-block">⟳</span> Generating</>
-              ) : (
-                <>✦ Generate</>
-              )}
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={runVariants}
+                disabled={isGenerating || variantsBusy || !prompt.trim()}
+                title={`Generate ${VARIANT_COUNT} variations to choose from`}
+                className={cn(
+                  "flex items-center justify-center w-8 h-8 rounded-md text-sm",
+                  "bg-surface text-text-secondary hover:text-text-primary hover:bg-surface-hover",
+                  "border border-border disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                )}
+              >
+                {variantsBusy ? <span className="animate-spin inline-block">⟳</span> : "⊞"}
+              </button>
+              <button
+                onClick={handleGenerate}
+                disabled={isGenerating || !prompt.trim()}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium",
+                  "bg-accent text-white hover:bg-accent-hover",
+                  "disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                )}
+              >
+                {isGenerating ? (
+                  <><span className="animate-spin inline-block">⟳</span> Generating</>
+                ) : (
+                  <>✦ Generate</>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       </div>
+
+      {/* Variant picker */}
+      {(variants !== null || variantsBusy) && (
+        <VariantTray
+          svgs={variants ?? []}
+          busy={variantsBusy}
+          count={VARIANT_COUNT}
+          onPick={applyVariant}
+          onClose={() => setVariants(null)}
+          onRegenerate={runVariants}
+        />
+      )}
 
       {/* Expand modal */}
       {expanded && (

@@ -2,37 +2,33 @@ import { useEffect } from "react";
 import { useDocumentStore } from "../store/documentStore";
 import { useSelectionStore } from "../store/selectionStore";
 import { useUIStore } from "../store/uiStore";
-import { usePathEditStore } from "../store/pathEditStore";
+import { usePathEditStore, startNodeEditForSelectedPath } from "../store/pathEditStore";
 import { parsePath, serializePath, deleteNodesFromContours } from "../lib/pathParser";
+import { findNode } from "../lib/nodeUtils";
+import {
+  duplicateSelection, copySelection, cutSelection, pasteClipboard,
+  groupSelection, ungroupSelection, reorderSelection,
+} from "../lib/editActions";
+import { getCanvasController } from "../lib/canvasController";
+
+const DRAW_TOOLS = ["rect", "ellipse", "line", "pen", "text"];
 
 /**
  * Global keyboard shortcut handler. Mount once in App.tsx.
  *
- * Shortcuts:
- *  V          → select tool
- *  H          → pan tool
- *  Delete / Backspace  → delete selected nodes
- *  Escape     → clear selection
- *  ⌘Z / Ctrl+Z        → undo
- *  ⌘⇧Z / Ctrl+⇧Z      → redo
- *  ⌘O / Ctrl+O        → (handled in Toolbar — no action here)
- *  ⌘S / Ctrl+S        → (handled in Toolbar — no action here)
+ * Tools:    V select · H pan · N node-edit · R rect · E ellipse · L line · P pen · T text
+ * Edit:     ⌘D duplicate · ⌘C/⌘X/⌘V copy/cut/paste · ⌘G group · ⌘⇧G ungroup
+ * Z-order:  [ / ] step back/forward · ⌘[ / ⌘] send to back / bring to front
+ * Move:     arrow keys nudge (⇧ = ×10) · Delete/Backspace remove
+ * History:  ⌘Z undo · ⌘⇧Z redo · Escape exit/clear
+ *
+ * State is read fresh via getState() inside the handler so the listener binds
+ * once and never goes stale.
  */
 export function useKeyboardShortcuts() {
-  const setTool = useUIStore((s) => s.setTool);
-  const activeTool = useUIStore((s) => s.activeTool);
-  const deleteNodes = useDocumentStore((s) => s.deleteNodes);
-  const updateNodeAttributes = useDocumentStore((s) => s.updateNodeAttributes);
-  const selectedIds = useSelectionStore((s) => s.selectedIds);
-  const clearSelection = useSelectionStore((s) => s.clearSelection);
-  const stopEditing = usePathEditStore((s) => s.stopEditing);
-  const selectedNodeIds = usePathEditStore((s) => s.selectedNodeIds);
-  const editingElementId = usePathEditStore((s) => s.editingElementId);
-  const clearNodeSelection = usePathEditStore((s) => s.clearNodeSelection);
-
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Skip shortcuts when user is typing in a form element
+      // Skip shortcuts while typing in a form element
       const target = e.target as HTMLElement;
       if (
         target.tagName === "INPUT" ||
@@ -42,88 +38,111 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      const docStore = useDocumentStore.getState();
+      const selStore = useSelectionStore.getState();
+      const uiStore = useUIStore.getState();
+      const pathStore = usePathEditStore.getState();
+      const sel = selStore.selectedIds;
+      const activeTool = uiStore.activeTool;
       const meta = e.metaKey || e.ctrlKey;
+      const key = e.key.toLowerCase(); // normalize so Shift'd combos still match
 
-      if (meta && e.key === "z") {
-        e.preventDefault();
-        if (e.shiftKey) {
-          useDocumentStore.temporal.getState().redo();
-        } else {
-          useDocumentStore.temporal.getState().undo();
+      // View shortcuts (use e.code so they're layout-independent: ⇧1 = "!" etc.)
+      if (e.shiftKey && !meta) {
+        if (e.code === "Digit1") { e.preventDefault(); getCanvasController()?.fitToView(); return; }
+        if (e.code === "Digit2") { e.preventDefault(); getCanvasController()?.zoomToSelection(); return; }
+      }
+
+      // ── Modifier combos ─────────────────────────────────────────────────────
+      if (meta) {
+        switch (key) {
+          case "z":
+            e.preventDefault();
+            if (e.shiftKey) useDocumentStore.temporal.getState().redo();
+            else useDocumentStore.temporal.getState().undo();
+            return;
+          case "a": {
+            e.preventDefault();
+            const doc = docStore.document;
+            if (doc) selStore.select(doc.nodes.map((n) => n.id));
+            return;
+          }
+          case "d": e.preventDefault(); duplicateSelection(); return;
+          case "c": copySelection(); return;
+          case "x": e.preventDefault(); cutSelection(); return;
+          case "v": e.preventDefault(); pasteClipboard(); return;
+          case "g":
+            e.preventDefault();
+            if (e.shiftKey) ungroupSelection(); else groupSelection();
+            return;
+          case "]": e.preventDefault(); reorderSelection("front"); return;
+          case "[": e.preventDefault(); reorderSelection("back"); return;
         }
+        // Swallow any other modifier combo so it can't fall through to tools.
         return;
       }
 
-      switch (e.key) {
-        case "v":
-        case "V":
-          setTool("select");
-          stopEditing();
-          break;
-        case "h":
-        case "H":
-          setTool("pan");
-          stopEditing();
-          break;
-        case "n":
-        case "N":
-          setTool("nodeEdit");
-          break;
-        case "r":
-        case "R":
-          setTool("rect");
-          stopEditing();
-          break;
-        case "e":
-        case "E":
-          setTool("ellipse");
-          stopEditing();
-          break;
-        case "l":
-        case "L":
-          setTool("line");
-          stopEditing();
-          break;
-        case "p":
-        case "P":
-          setTool("pen");
-          stopEditing();
-          break;
-        case "Delete":
-        case "Backspace":
-          if (activeTool === "nodeEdit" && selectedNodeIds.length > 0 && editingElementId) {
-            // Delete selected anchor nodes from the path being edited
-            const doc = useDocumentStore.getState().document;
-            function findEl(nodes: import("../types/svg").VectoNode[]): import("../types/svg").VectoNode | null {
-              for (const n of nodes) {
-                if (n.id === editingElementId) return n;
-                const f = findEl(n.children);
-                if (f) return f;
-              }
-              return null;
-            }
-            const el = doc ? findEl(doc.nodes) : null;
-            const d = el?.attributes?.d as string | undefined;
-            if (d) {
-              const contours = parsePath(d);
-              const newContours = deleteNodesFromContours(contours, new Set(selectedNodeIds));
-              updateNodeAttributes(editingElementId, { d: serializePath(newContours) });
-              clearNodeSelection();
-            }
-          } else if (selectedIds.length > 0) {
-            deleteNodes(selectedIds);
-            clearSelection();
+      // ── Plain keys ──────────────────────────────────────────────────────────
+      switch (key) {
+        case "v": uiStore.setTool("select"); pathStore.stopEditing(); break;
+        case "h": uiStore.setTool("pan"); pathStore.stopEditing(); break;
+        case "n": uiStore.setTool("nodeEdit"); startNodeEditForSelectedPath(); break;
+        case "r": uiStore.setTool("rect"); pathStore.stopEditing(); break;
+        case "e": uiStore.setTool("ellipse"); pathStore.stopEditing(); break;
+        case "l": uiStore.setTool("line"); pathStore.stopEditing(); break;
+        case "p": uiStore.setTool("pen"); pathStore.stopEditing(); break;
+        case "t": uiStore.setTool("text"); pathStore.stopEditing(); break;
+
+        case "]": reorderSelection("forward"); break;
+        case "[": reorderSelection("backward"); break;
+
+        case "arrowup":
+        case "arrowdown":
+        case "arrowleft":
+        case "arrowright":
+          if (activeTool === "select" && sel.length) {
+            e.preventDefault();
+            const step = e.shiftKey ? 10 : 1;
+            const dx = key === "arrowleft" ? -step : key === "arrowright" ? step : 0;
+            const dy = key === "arrowup" ? -step : key === "arrowdown" ? step : 0;
+            docStore.nudgeNodes(sel, dx, dy);
           }
           break;
-        case "Escape":
+
+        case "delete":
+        case "backspace":
+          if (
+            activeTool === "nodeEdit" &&
+            pathStore.selectedNodeIds.length > 0 &&
+            pathStore.editingElementId
+          ) {
+            // Delete selected anchor nodes from the path being edited
+            const editingId = pathStore.editingElementId;
+            const el = docStore.document
+              ? findNode(docStore.document.nodes, editingId)
+              : null;
+            const d = el?.attributes?.d;
+            if (d) {
+              const contours = parsePath(d);
+              const next = deleteNodesFromContours(contours, new Set(pathStore.selectedNodeIds));
+              docStore.updateNodeAttributes(editingId, { d: serializePath(next) });
+              pathStore.clearNodeSelection();
+            }
+          } else if (sel.length > 0) {
+            docStore.deleteNodes(sel);
+            selStore.clearSelection();
+          }
+          break;
+
+        case "escape":
           if (activeTool === "nodeEdit") {
-            stopEditing();
-            setTool("select");
-          } else if (["rect", "ellipse", "line", "pen"].includes(activeTool)) {
+            pathStore.stopEditing();
+            uiStore.setTool("select");
+          } else if (DRAW_TOOLS.includes(activeTool)) {
             // DrawOverlay handles cancel — just switch back to select
-            setTool("select");
+            uiStore.setTool("select");
           } else {
-            clearSelection();
+            selStore.clearSelection();
           }
           break;
       }
@@ -131,6 +150,5 @@ export function useKeyboardShortcuts() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [setTool, activeTool, deleteNodes, updateNodeAttributes, selectedIds, clearSelection,
-      stopEditing, selectedNodeIds, editingElementId, clearNodeSelection]);
+  }, []);
 }

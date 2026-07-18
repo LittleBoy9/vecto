@@ -4,7 +4,14 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "keywords": ["svg", "editor", "ai", "tauri", "design-tool", "claude"],
+  "keywords": [
+    "svg",
+    "editor",
+    "ai",
+    "tauri",
+    "design-tool",
+    "claude"
+  ],
   "author": "Sounak Das",
   "license": "MIT",
   "scripts": {
@@ -17,14 +24,15 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-fs": "^2",
+    "clsx": "^2.1.1",
+    "immer": "^10.1.1",
     "nanoid": "^5.0.9",
+    "polygon-clipping": "^0.15.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "zustand": "^5.0.3",
-    "immer": "^10.1.1",
+    "tailwind-merge": "^2.5.4",
     "zundo": "^2.2.0",
-    "clsx": "^2.1.1",
-    "tailwind-merge": "^2.5.4"
+    "zustand": "^5.0.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

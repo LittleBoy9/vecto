@@ -1,12 +1,19 @@
+import { useRef, useState } from "react";
+import { useStore } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { cn } from "../../lib/utils";
+import { ExportMenu } from "./ExportMenu";
+import { cn, basename } from "../../lib/utils";
 import { parseSVG } from "../../lib/svgParser";
 import { serializeDocument } from "../../lib/svgSerializer";
 import { useDocumentStore } from "../../store/documentStore";
 import { useSelectionStore } from "../../store/selectionStore";
 import { useUIStore, type Tool } from "../../store/uiStore";
+import { startNodeEditForSelectedPath } from "../../store/pathEditStore";
 import { useSettingsStore, activeKey } from "../../store/settingsStore";
+import { useThemeStore } from "../../store/themeStore";
+import { useRecentStore } from "../../store/recentStore";
+import { useContextMenuStore } from "../../store/contextMenuStore";
 
 // ── Tool button ───────────────────────────────────────────────────────────────
 
@@ -45,6 +52,8 @@ function Sep() {
 // ── Toolbar ───────────────────────────────────────────────────────────────────
 
 export function Toolbar() {
+  const exportBtnRef = useRef<HTMLButtonElement>(null);
+  const [exportOpen, setExportOpen] = useState(false);
   const activeTool = useUIStore((s) => s.activeTool);
   const setTool = useUIStore((s) => s.setTool);
   const setFileLoading = useUIStore((s) => s.setFileLoading);
@@ -54,8 +63,28 @@ export function Toolbar() {
   const settingsState = useSettingsStore();
   const { openSettings } = settingsState;
   const apiKey = activeKey(settingsState);
+  const theme = useThemeStore((s) => s.theme);
+  const toggleTheme = useThemeStore((s) => s.toggleTheme);
+  const recentPaths = useRecentStore((s) => s.paths);
+  const addRecent = useRecentStore((s) => s.addRecent);
+  const canUndo = useStore(useDocumentStore.temporal, (s) => s.pastStates.length > 0);
+  const canRedo = useStore(useDocumentStore.temporal, (s) => s.futureStates.length > 0);
 
   // ── File actions ────────────────────────────────────────────────────────────
+
+  const openPath = async (path: string) => {
+    setFileLoading(true);
+    clearSelection();
+    try {
+      const content = await invoke<string>("open_svg_file", { path });
+      setDocument(parseSVG(content), path);
+      addRecent(path);
+    } catch (err) {
+      console.error("Failed to open file:", err);
+    } finally {
+      setFileLoading(false);
+    }
+  };
 
   const handleOpen = async () => {
     const selected = await open({
@@ -63,15 +92,31 @@ export function Toolbar() {
       filters: [{ name: "SVG Files", extensions: ["svg"] }],
     });
     if (!selected || typeof selected !== "string") return;
+    openPath(selected);
+  };
+
+  const handleRecent = (e: React.MouseEvent<HTMLButtonElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const items = recentPaths.length
+      ? recentPaths.map((p) => ({ label: basename(p), onClick: () => openPath(p) }))
+      : [{ label: "No recent files", disabled: true }];
+    useContextMenuStore.getState().openMenu(r.left, r.bottom + 4, items);
+  };
+
+  const handleTraceImage = async () => {
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] }],
+    });
+    if (!selected || typeof selected !== "string") return;
 
     setFileLoading(true);
     clearSelection();
     try {
-      const content = await invoke<string>("open_svg_file", { path: selected });
-      const parsed = parseSVG(content);
-      setDocument(parsed, selected);
+      const svg = await invoke<string>("trace_image", { inputPath: selected });
+      setDocument(parseSVG(svg));
     } catch (err) {
-      console.error("Failed to open file:", err);
+      console.error("Image trace failed:", err);
     } finally {
       setFileLoading(false);
     }
@@ -94,6 +139,7 @@ export function Toolbar() {
       await invoke("save_svg_file", { path: targetPath, content });
       setFilePath(targetPath);
       markClean();
+      addRecent(targetPath);
     } catch (err) {
       console.error("Failed to save file:", err);
     }
@@ -106,23 +152,6 @@ export function Toolbar() {
       await navigator.clipboard.writeText(content);
     } catch (err) {
       console.error("Clipboard write failed:", err);
-    }
-  };
-
-  const handleExportPng = async () => {
-    if (!doc) return;
-    const targetPath = await save({
-      filters: [{ name: "PNG Image", extensions: ["png"] }],
-      defaultPath: (filePath ?? "untitled").replace(/\.svg$/i, "") + ".png",
-    });
-    if (!targetPath) return;
-
-    const content = serializeDocument(doc);
-    try {
-      // 2× scale by default — crisp on retina displays
-      await invoke("export_png", { svgContent: content, path: targetPath, scale: 2.0 });
-    } catch (err) {
-      console.error("PNG export failed:", err);
     }
   };
 
@@ -139,6 +168,7 @@ export function Toolbar() {
       await invoke("save_svg_file", { path: targetPath, content });
       setFilePath(targetPath);
       markClean();
+      addRecent(targetPath);
     } catch (err) {
       console.error("Failed to save file:", err);
     }
@@ -152,7 +182,7 @@ export function Toolbar() {
   // ── Render ──────────────────────────────────────────────────────────────────
 
   const fileName = filePath
-    ? filePath.split("/").pop() ?? filePath
+    ? basename(filePath)
     : doc
     ? "Untitled"
     : null;
@@ -189,7 +219,7 @@ export function Toolbar() {
         shortcut="N"
         icon="◈"
         active={activeTool === "nodeEdit"}
-        onClick={() => setTool("nodeEdit")}
+        onClick={() => { setTool("nodeEdit"); startNodeEditForSelectedPath(); }}
       />
 
       <Sep />
@@ -227,6 +257,14 @@ export function Toolbar() {
         active={activeTool === "pen"}
         onClick={() => setTool("pen")}
       />
+      <ToolButton
+        tool="text"
+        label="Text"
+        shortcut="T"
+        icon="T"
+        active={activeTool === "text"}
+        onClick={() => setTool("text")}
+      />
 
       <Sep />
 
@@ -234,14 +272,16 @@ export function Toolbar() {
       <button
         title="Undo (⌘Z)"
         onClick={handleUndo}
-        className="text-text-secondary hover:text-text-primary text-xs px-1.5 py-1 rounded hover:bg-surface"
+        disabled={!canUndo}
+        className="text-text-secondary hover:text-text-primary text-xs px-1.5 py-1 rounded hover:bg-surface disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
       >
         ↩
       </button>
       <button
         title="Redo (⌘⇧Z)"
         onClick={handleRedo}
-        className="text-text-secondary hover:text-text-primary text-xs px-1.5 py-1 rounded hover:bg-surface"
+        disabled={!canRedo}
+        className="text-text-secondary hover:text-text-primary text-xs px-1.5 py-1 rounded hover:bg-surface disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
       >
         ↪
       </button>
@@ -272,6 +312,20 @@ export function Toolbar() {
         Open
       </button>
       <button
+        onClick={handleRecent}
+        title="Recent files"
+        className="text-text-secondary hover:text-text-primary text-xs px-1.5 py-1 rounded hover:bg-surface"
+      >
+        ▾
+      </button>
+      <button
+        onClick={handleTraceImage}
+        title="Trace a raster image (PNG/JPG) into editable vectors"
+        className="text-text-secondary hover:text-text-primary text-xs px-2 py-1 rounded hover:bg-surface"
+      >
+        Trace
+      </button>
+      <button
         onClick={handleSave}
         disabled={!doc}
         className="text-text-secondary hover:text-text-primary text-xs px-2 py-1 rounded hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed"
@@ -297,15 +351,26 @@ export function Toolbar() {
         Copy SVG
       </button>
       <button
-        onClick={handleExportPng}
+        ref={exportBtnRef}
+        onClick={() => setExportOpen((o) => !o)}
         disabled={!doc}
-        title="Export as PNG (2× retina)"
+        title="Export as PNG / JPG (scale, selection)"
         className="text-text-secondary hover:text-text-primary text-xs px-2 py-1 rounded hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed"
       >
-        Export PNG
+        Export
       </button>
+      {exportOpen && <ExportMenu anchor={exportBtnRef.current} onClose={() => setExportOpen(false)} />}
 
       <Sep />
+
+      {/* Theme toggle */}
+      <button
+        onClick={toggleTheme}
+        title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        className="flex items-center justify-center w-7 h-7 rounded text-text-secondary hover:text-text-primary hover:bg-surface transition-colors"
+      >
+        {theme === "dark" ? "☀" : "☾"}
+      </button>
 
       {/* Settings — shows a dot if API key is missing */}
       <button

@@ -36,6 +36,17 @@ const SvgNode = memo(function SvgNode({ node }: SvgNodeProps) {
   const handlePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
     if (node.locked) return;
+
+    // In node-edit mode, a single click on a path edits it (so you can hop
+    // between paths without double-clicking). Non-path clicks just select.
+    if (useUIStore.getState().activeTool === "nodeEdit") {
+      if (PATH_TAGS.has(node.tagName) && node.attributes?.d) {
+        select([node.id]);
+        startEditing(node.id);
+      }
+      return;
+    }
+
     if (e.shiftKey) {
       addToSelection(node.id);
     } else {
@@ -123,7 +134,7 @@ export const SvgDocument = memo(function SvgDocument({
   document,
   zoom,
 }: SvgDocumentProps) {
-  const { viewBox: vb, nodes, rawDefs } = document;
+  const { viewBox: vb, nodes, rawDefs, gradients, filters } = document;
   const vbStr = `${vb.x} ${vb.y} ${vb.width} ${vb.height}`;
 
   return (
@@ -134,6 +145,35 @@ export const SvgDocument = memo(function SvgDocument({
       height={vb.height * zoom}
       style={{ display: "block", overflow: "visible" }}
     >
+      {/* Structured gradients + effect filters (live-editable) */}
+      {((gradients && gradients.length > 0) || (filters && filters.length > 0)) && (
+        <defs>
+          {gradients?.map((g) =>
+            React.createElement(
+              g.type === "radial" ? "radialGradient" : "linearGradient",
+              { id: g.id, key: g.id, ...g.attributes },
+              g.stops.map((s, i) =>
+                React.createElement("stop", {
+                  key: i,
+                  offset: s.offset,
+                  stopColor: s.color,
+                  stopOpacity: s.opacity,
+                })
+              )
+            )
+          )}
+          {filters?.map((f) => (
+            <filter key={f.id} id={f.id} x="-40%" y="-40%" width="180%" height="180%">
+              {f.type === "drop-shadow" ? (
+                <feDropShadow dx={f.dx} dy={f.dy} stdDeviation={f.blur} floodColor={f.color} floodOpacity={f.opacity} />
+              ) : (
+                <feGaussianBlur stdDeviation={f.blur} />
+              )}
+            </filter>
+          ))}
+        </defs>
+      )}
+      {/* Everything else in defs (filters, patterns, …) */}
       {rawDefs && (
         // eslint-disable-next-line react/no-danger
         <defs dangerouslySetInnerHTML={{ __html: rawDefs }} />

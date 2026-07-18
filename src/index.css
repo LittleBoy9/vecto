@@ -2,6 +2,49 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Theme tokens ──────────────────────────────────────────────────────────────
+   Colors are stored as space-separated RGB channels so Tailwind's
+   `rgb(var(--x) / <alpha-value>)` (and thus `bg-accent/40` etc.) works.
+   Defaults below are the DARK theme; `.light` overrides them. */
+
+:root {
+  --color-canvas: 20 20 20;
+  --color-panel: 30 30 30;
+  --color-surface: 42 42 42;
+  --color-surface-hover: 51 51 51;
+  --color-border: 51 51 51;
+  --color-border-subtle: 39 39 39;
+  --color-text-primary: 229 229 229;
+  --color-text-secondary: 136 136 136;
+  --color-text-muted: 85 85 85;
+  --color-accent: 14 165 233;
+  --color-accent-hover: 56 189 248;
+  --color-accent-dim: rgba(14, 165, 233, 0.15);
+  --color-danger: 239 68 68;
+
+  --grid-dot: #2e2e2e;
+  --scrollbar: #333333;
+}
+
+:root.light {
+  --color-canvas: 244 244 245;
+  --color-panel: 255 255 255;
+  --color-surface: 241 241 243;
+  --color-surface-hover: 228 228 232;
+  --color-border: 218 218 223;
+  --color-border-subtle: 232 232 235;
+  --color-text-primary: 24 24 27;
+  --color-text-secondary: 90 90 100;
+  --color-text-muted: 161 161 170;
+  --color-accent: 14 165 233;
+  --color-accent-hover: 2 132 199;
+  --color-accent-dim: rgba(14, 165, 233, 0.12);
+  --color-danger: 220 38 38;
+
+  --grid-dot: #d4d4d8;
+  --scrollbar: #cbcbcb;
+}
+
 /* ── Reset ─────────────────────────────────────────────────────────────────── */
 
 * {
@@ -15,6 +58,12 @@ body,
   padding: 0;
   height: 100%;
   overflow: hidden;
+}
+
+/* Match the canvas background so overscroll / load have no white flash */
+html,
+body {
+  background: rgb(var(--color-canvas));
 }
 
 body {
@@ -35,7 +84,7 @@ textarea {
 /* ── Canvas dot-grid background ────────────────────────────────────────────── */
 
 .canvas-grid {
-  background-image: radial-gradient(circle, #2e2e2e 1px, transparent 1px);
+  background-image: radial-gradient(circle, var(--grid-dot) 1px, transparent 1px);
   background-size: 24px 24px;
 }
 
@@ -43,7 +92,7 @@ textarea {
 
 .scrollbar-thin {
   scrollbar-width: thin;
-  scrollbar-color: #333 transparent;
+  scrollbar-color: var(--scrollbar) transparent;
 }
 
 .scrollbar-thin::-webkit-scrollbar {
@@ -55,7 +104,7 @@ textarea {
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background-color: #333;
+  background-color: var(--scrollbar);
   border-radius: 2px;
 }
 

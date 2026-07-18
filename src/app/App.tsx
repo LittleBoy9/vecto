@@ -4,17 +4,26 @@ import { PropertiesPanel } from "../components/sidebar/PropertiesPanel";
 import { Canvas } from "../components/canvas/Canvas";
 import { PromptBar } from "../components/prompt/PromptBar";
 import { SettingsModal } from "../components/settings/SettingsModal";
+import { ContextMenu } from "../components/ui/ContextMenu";
+import { RecoveryBanner } from "../components/ui/RecoveryBanner";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { useFileDrop } from "../hooks/useFileDrop";
+import { useAutosave } from "../hooks/useAutosave";
 import { useUIStore } from "../store/uiStore";
 
 export default function App() {
   useKeyboardShortcuts();
+  useFileDrop();
+  useAutosave();
 
   const leftPanelOpen = useUIStore((s) => s.leftPanelOpen);
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-canvas text-text-primary font-sans">
+      {/* Crash-recovery prompt */}
+      <RecoveryBanner />
+
       {/* Top toolbar */}
       <Toolbar />
 
@@ -35,6 +44,9 @@ export default function App() {
 
       {/* Settings modal (portal-like, rendered at root level) */}
       <SettingsModal />
+
+      {/* Right-click context menu (portals to body) */}
+      <ContextMenu />
     </div>
   );
 }

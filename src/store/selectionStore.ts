@@ -17,7 +17,7 @@ interface SelectionActions {
 }
 
 export const useSelectionStore = create<SelectionState & SelectionActions>(
-  (set, get) => ({
+  (set) => ({
     selectedIds: [],
     hoveredId: null,
 
@@ -38,8 +38,5 @@ export const useSelectionStore = create<SelectionState & SelectionActions>(
     clearSelection: () => set({ selectedIds: [] }),
 
     setHovered: (id) => set({ hoveredId: id }),
-
-    // Convenience — not stored, just reads current state
-    isSelected: (id: string) => get().selectedIds.includes(id),
   })
 );

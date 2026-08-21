@@ -74,12 +74,17 @@ if (!signature) {
 const entry = {
   platform: PLATFORM_KEY,
   signature,
-  // Predictable public download URL for the tag this run created.
-  url: `https://github.com/${REPO}/releases/download/${encodeURIComponent(TAG)}/${encodeURIComponent(payloadName)}`,
+  // The LOCAL bundle name, which is not necessarily the asset name. On macOS
+  // tauri-action renames the updater bundle on upload — Vecto.app.tar.gz becomes
+  // Vecto_aarch64.app.tar.gz / Vecto_x64.app.tar.gz — so that the two macOS
+  // builds do not collide as assets on the same release. Deriving the download
+  // URL from this name produced a manifest whose macOS entries 404'd.
+  // The publish job resolves the real asset name; see merge-manifest.mjs.
+  localName: payloadName,
 };
 
 writeFileSync("update-entry.json", JSON.stringify(entry, null, 2) + "\n");
 
-console.log(`platform : ${entry.platform}`);
-console.log(`payload  : ${payloadName}`);
-console.log(`signature: ${signature.length} chars`);
+console.log(`platform  : ${entry.platform}`);
+console.log(`local name: ${payloadName}`);
+console.log(`signature : ${signature.length} chars`);

@@ -268,10 +268,31 @@ jobs:
           path: entries
           merge-multiple: false
 
+      # The manifest must reference the asset names the release actually has,
+      # which are not always the local bundle names (tauri-action renames the
+      # macOS updater bundles on upload). Pull down the uploaded .sig assets so
+      # each fragment can be matched to its real asset by signature content.
+      - name: Download uploaded signatures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.gate.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p sigs
+          gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --paginate \
+            --jq '.[] | select(.name | endswith(".sig")) | "\(.id) \(.name)"' \
+          | while read -r id name; do
+              gh api -H "Accept: application/octet-stream" \
+                "repos/${{ github.repository }}/releases/assets/$id" > "sigs/$name"
+              echo "  fetched $name"
+            done
+          ls sigs | wc -l | xargs echo "signature assets:"
+
       - name: Merge into one latest.json
         env:
           VERSION: ${{ needs.gate.outputs.version }}
-        run: node .github/scripts/merge-manifest.mjs entries latest.json
+          TAG: ${{ needs.gate.outputs.tag }}
+        run: node .github/scripts/merge-manifest.mjs entries latest.json sigs
 
       - name: Upload manifest and publish
         env:

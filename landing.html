@@ -247,6 +247,31 @@
   .dl-note .sep { opacity: .4; margin: 0 7px; }
   .dl-fallback { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
 
+  /* First-launch help. Collapsed by default so it never undercuts the CTA, but
+     present so the Gatekeeper warning does not read as a broken download.
+     Selectors are scoped under .dl and use div rather than p, because the
+     generic `.cta p` rule outranks a single-class selector and would silently
+     restyle anything placed here. */
+  .dl-help { position: relative; z-index: 0; text-align: center; }
+  .dl-help summary {
+    list-style: none; font-family: var(--body); font-size: 12px; color: var(--muted);
+    text-decoration: underline; text-underline-offset: 3px;
+    display: inline-flex; align-items: center; gap: 6px; transition: color .2s;
+  }
+  .dl-help summary::-webkit-details-marker { display: none; }
+  .dl-help summary::after { content: "▾"; font-size: 9px; transition: transform .2s; }
+  .dl-help[open] summary::after { transform: rotate(180deg); }
+  .dl-help summary:hover { color: var(--text); }
+  .dl-help summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+  .dl .dl-help-body {
+    max-width: 440px; margin: 12px auto 0; padding: 13px 16px;
+    border-radius: 12px; background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    font-size: 12.5px; line-height: 1.7; color: var(--muted); text-align: left;
+  }
+  .dl .dl-help-body b { color: var(--text); font-weight: 600; }
+  .dl .dl-help-body + .dl-help-body { margin-top: 8px; }
+
   @media (max-width: 560px) {
     .dl-group { width: 100%; }
     .dl-main { flex: 1; justify-content: center; padding: 15px 18px; font-size: 15px; }
@@ -646,6 +671,18 @@
             <b>Version 0.1.0</b><span class="sep">·</span><span id="dlArch">Universal</span><span class="sep">·</span>Free &amp; open source
             <br />macOS 10.15+ &nbsp;·&nbsp; Windows 10 (1803) or later
           </p>
+
+          <details class="dl-help">
+            <summary data-cursor>First launch on macOS?</summary>
+            <div class="dl-help-body">
+              Vecto isn't notarized with Apple yet, so macOS won't open it on the
+              first try — on some Macs the warning even says the app is
+              <b>damaged</b>. It isn't; that's just what an un-notarized app looks
+              like. Open <b>System Settings → Privacy &amp; Security</b>, scroll to
+              <b>Security</b>, and click <b>Open Anyway</b> next to Vecto. You only
+              do this once.
+            </div>
+          </details>
         </div>
 
         <noscript>

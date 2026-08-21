@@ -53,6 +53,26 @@ npm install
 npm run tauri dev
 ```
 
+### Opening Vecto on macOS
+
+Vecto is not yet notarized with Apple, so macOS refuses to open it the first
+time. On some Macs the warning says the app is **damaged** — it isn't. That is
+simply what an un-notarized app looks like to Gatekeeper.
+
+1. Open the `.dmg` and drag Vecto to Applications
+2. Try to launch it once, and let the warning appear
+3. Open **System Settings → Privacy & Security**, scroll to **Security**
+4. Click **Open Anyway** next to Vecto
+
+You only do this once. Updates installed from inside the app are not affected.
+
+Windows is more forgiving: SmartScreen shows *"Windows protected your PC"* —
+click **More info → Run anyway**.
+
+> Notarization requires a paid Apple Developer account. Once that is in place the
+> installers are signed automatically by the release workflow and this step
+> disappears. See [RELEASING.md](RELEASING.md).
+
 ### API Key
 
 Vecto uses the Claude API for SVG generation.

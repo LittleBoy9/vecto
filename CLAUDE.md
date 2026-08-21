@@ -135,6 +135,12 @@ Auto-update is **consent-first**. Vecto holds unsaved artwork behind `isDirty`,
 so nothing downloads or relaunches unasked, and the restart path writes a
 crash-recovery snapshot first. See [RELEASING.md](RELEASING.md).
 
+`landing.html` deploys separately to GitHub Pages (`.github/workflows/pages.yml`)
+on any push to main that touches it. The absolute URLs in the page are rewritten
+at build time to wherever the site is actually served — do not hardcode a domain
+the repo does not control, or canonical will point search engines away from the
+real page.
+
 ---
 
 ## File Map

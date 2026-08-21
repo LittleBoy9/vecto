@@ -1,0 +1,143 @@
+name: Deploy landing page
+
+# Publishes landing.html to GitHub Pages on every push to main that touches it.
+#
+# Uses the official Pages deployment rather than pushing to a gh-pages branch:
+# no extra branch in the repo, no `contents: write` (the token only gets
+# `pages: write` + `id-token: write`), and real deployment history in the
+# Environments tab. It does require Pages to be set to the "GitHub Actions"
+# source once — Settings > Pages > Source > GitHub Actions.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "landing.html"
+      - "public/**"
+      - "robots.txt"
+      - "sitemap.xml"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; queue instead of cancelling a half-finished one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Assemble site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble
+        env:
+          # Set this to a domain you actually control and have pointed at
+          # GitHub Pages (A records to 185.199.108-111.153, or a CNAME to
+          # <owner>.github.io). Leave it empty to publish at the github.io URL.
+          #
+          # vecto.app is currently a registrar parking page, NOT this site, so it
+          # is deliberately left unset — see the canonical-URL note below.
+          CUSTOM_DOMAIN: ""
+        run: |
+          set -euo pipefail
+
+          OWNER_LC=$(echo "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')
+          REPO="${GITHUB_REPOSITORY##*/}"
+          if [ -n "$CUSTOM_DOMAIN" ]; then
+            BASE="https://$CUSTOM_DOMAIN"
+          else
+            BASE="https://$OWNER_LC.github.io/$REPO"
+          fi
+          echo "Publishing to $BASE"
+
+          mkdir -p _site
+          cp landing.html _site/index.html
+
+          # Copy the whole public/ directory rather than naming files one by one,
+          # so a new asset can never be silently left behind.
+          if [ -d public ]; then
+            cp -R public _site/public
+            # landing.html references assets BOTH ways: relative (public/favicon.svg)
+            # and absolute at the site root (og:image -> /og.png). Mirror the
+            # contents at the root so both resolve.
+            cp public/* _site/ 2>/dev/null || true
+          fi
+
+          [ -f robots.txt ]  && cp robots.txt  _site/
+          [ -f sitemap.xml ] && cp sitemap.xml _site/
+
+          # Rewrite the hardcoded absolute URLs to wherever the site is really
+          # served. Left as-is, canonical and og:url would point at vecto.app —
+          # a parking page — which tells search engines the real content lives
+          # somewhere it does not, and suppresses this page instead.
+          for f in _site/index.html _site/robots.txt _site/sitemap.xml; do
+            [ -f "$f" ] || continue
+            sed -i "s#https://vecto\.app#$BASE#g" "$f"
+          done
+
+          # Pages runs Jekyll by default, which drops files beginning with "_".
+          touch _site/.nojekyll
+
+          echo "── site contents ──"
+          find _site -type f | sort | sed 's|_site/|  |'
+
+          echo "── sanity checks ──"
+          grep -q 'rel="canonical"' _site/index.html && echo "  canonical present"
+          grep -oE 'canonical" href="[^"]+"' _site/index.html | sed 's/^/  /'
+          grep -oE 'og:image" content="[^"]+"' _site/index.html | sed 's/^/  /'
+          if grep -q "vecto\.app" _site/index.html; then
+            echo "::error::vecto.app still present after rewrite"
+            exit 1
+          fi
+          # The og:image URL must correspond to a file that actually shipped.
+          OG=$(grep -oE 'og:image" content="[^"]+"' _site/index.html | sed 's/.*content="//; s/"//')
+          OG_PATH="_site/${OG#$BASE/}"
+          if [ ! -f "$OG_PATH" ]; then
+            echo "::error::og:image points at $OG but $OG_PATH does not exist"
+            exit 1
+          fi
+          echo "  og:image resolves to $OG_PATH"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Verify the site is live
+        run: |
+          URL="${{ steps.deployment.outputs.page_url }}"
+          echo "Deployed to $URL"
+          for i in 1 2 3 4 5; do
+            sleep 5
+            CODE=$(curl -sS -o live.html -w "%{http_code}" -L "$URL" || true)
+            [ "$CODE" = "200" ] && break
+            echo "attempt $i: HTTP $CODE"
+          done
+          if [ "$CODE" != "200" ]; then
+            echo "::error::Landing page returned $CODE"
+            exit 1
+          fi
+          # Prove the deployed page is the real one, not a Pages 404 that also
+          # happens to return 200.
+          grep -q "dl-group" live.html || {
+            echo "::error::Deployed page is missing the download button markup"
+            exit 1
+          }
+          echo "Landing page is live and contains the download button."

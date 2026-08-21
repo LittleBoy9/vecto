@@ -13,6 +13,10 @@ import { useUIStore } from "../store/uiStore";
 export function useFileDrop() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    // If cleanup runs before onDragDropEvent resolves, `unlisten` is still
+    // undefined and the listener would leak — React StrictMode's double-mount
+    // hits this on every dev boot. Detach as soon as the handle arrives.
+    let cancelled = false;
 
     getCurrentWebview()
       .onDragDropEvent(async (event) => {
@@ -38,8 +42,14 @@ export function useFileDrop() {
           ui.setFileLoading(false);
         }
       })
-      .then((u) => { unlisten = u; });
+      .then((u) => {
+        if (cancelled) u();
+        else unlisten = u;
+      });
 
-    return () => { if (unlisten) unlisten(); };
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
   }, []);
 }

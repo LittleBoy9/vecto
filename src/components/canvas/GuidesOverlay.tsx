@@ -39,6 +39,8 @@ export function GuidesOverlay({ document, zoom, screenToDoc }: GuidesOverlayProp
       height={vb.height * zoom}
       onPointerMove={onMove}
       onPointerUp={() => { dragId.current = null; }}
+      onPointerCancel={() => { dragId.current = null; }}
+      onLostPointerCapture={() => { dragId.current = null; }}
     >
       {guides.map((g) => {
         const vertical = g.axis === "x";

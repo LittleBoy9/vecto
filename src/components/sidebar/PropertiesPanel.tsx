@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useDocumentStore, beginUndoBatch, endUndoBatch } from "../../store/documentStore";
 import { useSelectionStore } from "../../store/selectionStore";
 import { usePanelStore } from "../../store/panelStore";
+import { useUndoBatch } from "../../hooks/useUndoBatch";
 import { cn, colorToHex } from "../../lib/utils";
 import { findNode } from "../../lib/nodeUtils";
 import { getDocBBox, unionDocBBox } from "../../lib/bbox";
@@ -70,7 +72,7 @@ function ColorRow({ label, value, nodeId, attrKey }: ColorRowProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const swatchRef = useRef<HTMLButtonElement>(null);
   // Collapse a whole pick (drag across the field) into one undo step.
-  const batchingRef = useRef(false);
+  const batch = useUndoBatch();
 
   const makeGradient = () => {
     const id = newGradientId();
@@ -80,11 +82,11 @@ function ColorRow({ label, value, nodeId, attrKey }: ColorRowProps) {
   };
 
   const handlePick = (hex: string) => {
-    if (!batchingRef.current) { beginUndoBatch(); batchingRef.current = true; }
+    batch.begin();
     update(nodeId, { [attrKey]: hex });
   };
   const closePicker = () => {
-    if (batchingRef.current) { endUndoBatch(); batchingRef.current = false; }
+    batch.end();
     setPickerOpen(false);
   };
 
@@ -179,6 +181,23 @@ function extractPlainText(raw: string): string {
   return el.textContent ?? "";
 }
 
+/**
+ * Escape plain text for storage in `rawContent`.
+ *
+ * rawContent is markup — it is rendered via dangerouslySetInnerHTML and written
+ * straight into the saved SVG. Content that arrives from parseSVG is already
+ * sanitized, but text typed here was previously stored verbatim, so an
+ * ampersand or a less-than produced malformed markup (and a `<img onerror>`
+ * would have executed). Escaping at this boundary keeps the invariant that
+ * rawContent is always valid, safe markup.
+ */
+function escapeTextContent(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 // ── Text content editor ───────────────────────────────────────────────────────
 
 interface TextContentRowProps {
@@ -190,20 +209,15 @@ function TextContentRow({ node, focusRef }: TextContentRowProps) {
   const updateRawContent = useDocumentStore((s) => s.updateNodeRawContent);
   const plain = node.rawContent !== undefined ? extractPlainText(node.rawContent) : "";
   const [draft, setDraft] = useState(plain);
-  // True while an edit batch is open, so the whole edit collapses to one undo step.
-  const batchingRef = useRef(false);
+  // Collapses the whole edit into one undo step; auto-closes on unmount.
+  const batch = useUndoBatch();
 
   // Sync draft when node changes (e.g. different element selected)
   useEffect(() => {
     setDraft(extractPlainText(node.rawContent ?? ""));
   }, [node.id, node.rawContent]);
 
-  const endBatch = () => {
-    if (batchingRef.current) {
-      endUndoBatch();
-      batchingRef.current = false;
-    }
-  };
+  const endBatch = batch.end;
 
   return (
     <div className="px-4 py-2 w-full min-w-0 border-b border-border">
@@ -216,12 +230,9 @@ function TextContentRow({ node, focusRef }: TextContentRowProps) {
         rows={3}
         onChange={(e) => {
           // Open the undo batch on the first keystroke of an edit.
-          if (!batchingRef.current) {
-            beginUndoBatch();
-            batchingRef.current = true;
-          }
+          batch.begin();
           setDraft(e.target.value);
-          updateRawContent(node.id, e.target.value);
+          updateRawContent(node.id, escapeTextContent(e.target.value));
         }}
         onBlur={endBatch}
         onKeyDown={(e) => {
@@ -229,7 +240,7 @@ function TextContentRow({ node, focusRef }: TextContentRowProps) {
           if (e.key === "Escape") {
             e.stopPropagation();
             setDraft(plain);
-            updateRawContent(node.id, plain);
+            updateRawContent(node.id, escapeTextContent(plain));
             endBatch();
             (e.target as HTMLTextAreaElement).blur();
           }
@@ -250,16 +261,35 @@ function StyleSlider({ label, value, min, max, step, onCommit, format }: {
   onCommit: (v: string) => void; format?: (v: number) => string;
 }) {
   const [v, setV] = useState(value);
-  const batching = useRef(false);
+  const batch = useUndoBatch();
   useEffect(() => { setV(value); }, [value]);
+
+  /**
+   * A range input drags natively without pointer capture, so releasing the
+   * mouse outside the window never fires its onPointerUp — which used to strand
+   * the undo batch open and kill history recording. Close it from a window-level
+   * listener instead, which fires wherever the release happens.
+   */
+  const beginDrag = () => {
+    batch.begin();
+    const done = () => {
+      batch.end();
+      window.removeEventListener("pointerup", done);
+      window.removeEventListener("pointercancel", done);
+    };
+    window.addEventListener("pointerup", done);
+    window.addEventListener("pointercancel", done);
+  };
+
   return (
     <div className="flex items-center gap-2">
       <label className="text-text-muted text-[10px] w-20 flex-shrink-0 uppercase tracking-wide truncate">{label}</label>
       <input
         type="range" min={min} max={max} step={step} value={v}
-        onPointerDown={() => { if (!batching.current) { beginUndoBatch(); batching.current = true; } }}
+        onPointerDown={beginDrag}
+        onKeyDown={beginDrag}
         onChange={(e) => { const nv = parseFloat(e.target.value); setV(nv); onCommit(String(nv)); }}
-        onPointerUp={() => { if (batching.current) { endUndoBatch(); batching.current = false; } }}
+        onBlur={batch.end}
         className="flex-1 min-w-0 accent-accent"
       />
       <span className="text-[10px] text-text-secondary w-9 text-right tabular-nums">
@@ -393,9 +423,7 @@ function StopRow({ stop, onChange, onDelete, canDelete }: {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   // Collapse a color-drag / offset-type burst into one undo step.
-  const batching = useRef(false);
-  const begin = () => { if (!batching.current) { beginUndoBatch(); batching.current = true; } };
-  const end = () => { if (batching.current) { endUndoBatch(); batching.current = false; } };
+  const { begin, end } = useUndoBatch();
   return (
     <div className="flex items-center gap-2">
       <button
@@ -508,9 +536,7 @@ function EffectsSection({ node }: { node: VectoNode }) {
 
   const [colorOpen, setColorOpen] = useState(false);
   const colorRef = useRef<HTMLButtonElement>(null);
-  const batching = useRef(false);
-  const begin = () => { if (!batching.current) { beginUndoBatch(); batching.current = true; } };
-  const end = () => { if (batching.current) { endUndoBatch(); batching.current = false; } };
+  const { begin, end } = useUndoBatch();
 
   const ref = (node.attributes.filter ?? "").match(/^url\(#(.+?)\)$/);
   const filter = ref ? filters?.find((f) => f.id === ref[1]) : undefined;
@@ -679,17 +705,26 @@ function AiPromptBox({ label, placeholder, button, getIds, frameInstruction }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const cancelledRef = useRef(false);
+
   const run = async () => {
     const trimmed = instruction.trim();
     if (!trimmed || busy) return;
     const ids = getIds();
     if (!ids.length) return;
+    cancelledRef.current = false;
     setError(null);
     setBusy(true);
     const res = await runAiEdit(ids, frameInstruction ? frameInstruction(trimmed) : trimmed);
-    if (!res.ok && res.error) setError(res.error);
+    // A cancelled edit ends without a complete SVG — that is not an error.
+    if (!res.ok && res.error && !cancelledRef.current) setError(res.error);
     if (res.ok) setInstruction("");
     setBusy(false);
+  };
+
+  const cancelRun = () => {
+    cancelledRef.current = true;
+    invoke("cancel_ai").catch(() => { /* nothing in flight */ });
   };
 
   return (
@@ -707,15 +742,27 @@ function AiPromptBox({ label, placeholder, button, getIds, frameInstruction }: {
                    leading-relaxed placeholder:text-text-muted disabled:opacity-50"
       />
       {error && <p className="text-[10px] text-danger mt-1">{error}</p>}
-      <button
-        onClick={run}
-        disabled={busy || !instruction.trim()}
-        className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded
-                   text-[11px] font-medium bg-accent text-white hover:bg-accent-hover
-                   disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-      >
-        {busy ? <><span className="animate-spin inline-block">⟳</span> Applying…</> : <>{button}</>}
-      </button>
+      {busy ? (
+        <button
+          onClick={cancelRun}
+          title="Stop the edit in flight"
+          className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded
+                     text-[11px] font-medium bg-surface border border-border text-text-secondary
+                     hover:text-danger hover:border-danger transition-colors"
+        >
+          <span className="animate-spin inline-block">⟳</span> Stop
+        </button>
+      ) : (
+        <button
+          onClick={run}
+          disabled={!instruction.trim()}
+          className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded
+                     text-[11px] font-medium bg-accent text-white hover:bg-accent-hover
+                     disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {button}
+        </button>
+      )}
     </div>
   );
 }

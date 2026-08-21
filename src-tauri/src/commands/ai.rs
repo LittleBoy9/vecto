@@ -1,5 +1,51 @@
 use futures_util::StreamExt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tauri::Emitter;
+
+/// Set by `cancel_ai`, cleared at the start of every request. There is at most
+/// one generation in flight at a time (the UI gates on `isGenerating`), so a
+/// single flag is enough. Without this there was no way to stop a request:
+/// a stalled call left the spinner up forever with no abort and no timeout.
+static CANCELLED: AtomicBool = AtomicBool::new(false);
+
+/// Hard ceiling on any single request, so a silently dropped connection can't
+/// hang the UI indefinitely even if the user never hits cancel.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+
+fn http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))
+}
+
+fn begin_request() {
+    CANCELLED.store(false, Ordering::SeqCst);
+}
+
+fn is_cancelled() -> bool {
+    CANCELLED.load(Ordering::SeqCst)
+}
+
+/// Ask the in-flight generation / edit / variant run to stop.
+#[tauri::command]
+pub fn cancel_ai() {
+    CANCELLED.store(true, Ordering::SeqCst);
+}
+
+/// Resolve `fut`, or bail out early if the user cancels. Used for the
+/// non-streaming variant fan-out, which otherwise has no cancellation point.
+async fn cancellable<T>(fut: impl std::future::Future<Output = T>) -> Option<T> {
+    tokio::select! {
+        r = fut => Some(r),
+        _ = async {
+            while !is_cancelled() {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        } => None,
+    }
+}
 
 const SYSTEM_PROMPT: &str = r#"You are an expert SVG designer and engineer. Your only job is to produce clean, well-structured SVG markup.
 
@@ -42,7 +88,7 @@ async fn generate_once(
     user: String,
     api_key: &str,
 ) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    let client = http_client()?;
 
     let (request, point_to_text): (reqwest::RequestBuilder, fn(&serde_json::Value) -> Option<&str>) =
         match provider {
@@ -109,14 +155,6 @@ async fn generate_once(
     extract_svg(raw).ok_or_else(|| "The model did not return valid SVG markup.".to_string())
 }
 
-#[tauri::command]
-pub async fn generate_svg(prompt: String, api_key: String) -> Result<String, String> {
-    if api_key.trim().is_empty() {
-        return Err("No API key set. Add your API key in Settings.".to_string());
-    }
-    generate_once("anthropic", "claude-sonnet-4-6", SYSTEM_PROMPT, user_message(&prompt), &api_key).await
-}
-
 /// Generate several independent SVG variants of the same prompt, concurrently.
 #[tauri::command]
 pub async fn generate_svg_variants(
@@ -129,10 +167,17 @@ pub async fn generate_svg_variants(
     if api_key.trim().is_empty() {
         return Err(format!("No API key set for {}. Add it in Settings.", provider));
     }
+    begin_request();
     let n = count.clamp(1, 6);
     let user = user_message(&prompt);
     let tasks = (0..n).map(|_| generate_once(&provider, &model, SYSTEM_PROMPT, user.clone(), &api_key));
-    let results = futures_util::future::join_all(tasks).await;
+
+    // join_all has no cancellation point of its own — one stalled request used
+    // to block the whole batch with no way out.
+    let results = match cancellable(futures_util::future::join_all(tasks)).await {
+        Some(r) => r,
+        None => return Ok(Vec::new()), // cancelled by the user — not an error
+    };
 
     let svgs: Vec<String> = results.into_iter().filter_map(Result::ok).collect();
     if svgs.is_empty() {
@@ -174,6 +219,7 @@ pub async fn generate_svg_stream(
     if api_key.trim().is_empty() {
         return Err(format!("No API key set for {}. Add it in Settings.", provider));
     }
+    begin_request();
     stream_provider(
         &provider, &model, SYSTEM_PROMPT, user_message(&prompt), api_key, app_handle, "svg:chunk",
     )
@@ -192,6 +238,7 @@ pub async fn edit_svg_stream(
     if api_key.trim().is_empty() {
         return Err(format!("No API key set for {}. Add it in Settings.", provider));
     }
+    begin_request();
     stream_provider(
         &provider, &model, EDIT_SYSTEM_PROMPT, edit_user_message(&instruction, &svg),
         api_key, app_handle, "svg:edit-chunk",
@@ -227,7 +274,7 @@ async fn stream_anthropic(
     app_handle: tauri::AppHandle,
     event: &'static str,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let client = http_client()?;
     let body = serde_json::json!({
         "model": model,
         "max_tokens": 8000,
@@ -270,7 +317,7 @@ async fn stream_openai(
     app_handle: tauri::AppHandle,
     event: &'static str,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let client = http_client()?;
     let body = serde_json::json!({
         "model": model,
         "max_tokens": 4096,
@@ -310,7 +357,7 @@ async fn stream_gemini(
     app_handle: tauri::AppHandle,
     event: &'static str,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let client = http_client()?;
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
         model.trim(),
@@ -375,6 +422,10 @@ impl StreamingResponse {
         let mut buf = String::new();
 
         while let Some(chunk) = stream.next().await {
+            // Cancellation point: stop draining and drop the connection.
+            if is_cancelled() {
+                return Ok(());
+            }
             let chunk = chunk.map_err(|e| format!("Stream read error: {e}"))?;
             buf.push_str(&String::from_utf8_lossy(&chunk));
 

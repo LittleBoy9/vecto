@@ -140,18 +140,20 @@ function parseNode(el: Element, index: number): VectoNode {
   const children: VectoNode[] = [];
   let rawContent: string | undefined;
 
-  if (tagName === "g" || tagName === "svg") {
-    // Recurse into group containers
+  if (TEXT_CONTENT_TAGS.has(tagName)) {
+    // Text elements: store innerHTML so tspan children and raw text are preserved.
+    // These are rendered via dangerouslySetInnerHTML in SvgNode.
+    rawContent = el.innerHTML;
+  } else if (el.children.length > 0) {
+    // Any element with element children is a container — not just <g>/<svg>.
+    // <a>, <switch>, <symbol>, <marker>, <mask>, <clipPath> all nest content, and
+    // hardcoding the pair silently dropped every child of the other six.
     Array.from(el.children).forEach((child, i) => {
       const childTag = child.tagName.toLowerCase();
       if (!SKIP_TAGS.has(childTag)) {
         children.push(parseNode(child, i));
       }
     });
-  } else if (TEXT_CONTENT_TAGS.has(tagName)) {
-    // Text elements: store innerHTML so tspan children and raw text are preserved.
-    // These are rendered via dangerouslySetInnerHTML in SvgNode.
-    rawContent = el.innerHTML;
   }
 
   // display:none round-trips into the layer visibility toggle (see svgSerializer).
@@ -162,15 +164,20 @@ function parseNode(el: Element, index: number): VectoNode {
     visible = false;
     delete attributes.display;
   }
+  // data-vecto-locked round-trips the layer lock (it has no SVG equivalent).
+  const locked = attributes["data-vecto-locked"] === "true";
+  delete attributes["data-vecto-locked"];
 
   return {
     id: nanoid(),
     svgId: el.getAttribute("id") ?? undefined,
     type: nodeType(tagName),
     tagName,
+    // SVG element names are case-sensitive — keep the original when it differs.
+    ...(el.tagName !== tagName ? { srcTag: el.tagName } : {}),
     attributes,
     children,
-    locked: false,
+    locked,
     visible,
     name: buildName(el, index),
     rawContent,
@@ -179,9 +186,39 @@ function parseNode(el: Element, index: number): VectoNode {
 }
 
 /**
+ * True if a URL attribute value is safe to keep.
+ *
+ * Browsers strip tab/newline/CR from URLs *before* resolving the scheme, so a
+ * denylist like /^\s*javascript:/ is trivially defeated by `java&#10;script:`.
+ * We strip control characters first, then allowlist known-good schemes — an
+ * unknown scheme is rejected rather than hunted for. No scheme at all (a
+ * fragment, or a relative path) is always fine.
+ */
+function isSafeUrl(raw: string): boolean {
+  const v = raw.replace(/[\u0000-\u0020\u007f]/g, "").trim().toLowerCase();
+  const m = v.match(/^([a-z][a-z0-9+.-]*):/);
+  if (!m) return true;
+  switch (m[1]) {
+    case "http":
+    case "https":
+    case "mailto":
+    case "tel":
+      return true;
+    case "data":
+      // Raster data URIs only — data:image/svg+xml can carry script of its own.
+      return /^data:image\/(png|jpeg|jpg|gif|webp);/.test(v);
+    default:
+      return false;
+  }
+}
+
+/** Attributes that carry a URL and therefore need scheme checking. */
+const URL_ATTRS = new Set(["href", "xlink:href", "src"]);
+
+/**
  * Strip XSS vectors from a parsed SVG DOM in place, BEFORE we read attributes
  * or innerHTML (rawDefs / rawContent) out of it. Removes <script>/<foreignObject>
- * subtrees, all on* event-handler attributes, and javascript: URLs. Runs on
+ * subtrees, all on* event-handler attributes, and unsafe URL schemes. Runs on
  * every parse (file open, AI output, trace, drag-drop, recovery).
  */
 function sanitizeSvgDom(root: Element) {
@@ -196,7 +233,10 @@ function sanitizeSvgDom(root: Element) {
       const name = attr.name.toLowerCase();
       if (name.startsWith("on")) {
         el.removeAttribute(attr.name);
-      } else if (name.endsWith("href") && /^\s*javascript:/i.test(attr.value)) {
+      } else if (
+        (URL_ATTRS.has(name) || name.endsWith(":href")) &&
+        !isSafeUrl(attr.value)
+      ) {
         el.removeAttribute(attr.name);
       }
     }

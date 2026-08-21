@@ -81,14 +81,17 @@ export const PathEditOverlay = memo(function PathEditOverlay({
 
   const [contours, setContours] = useState<PathContour[]>([]);
 
-  // Re-parse whenever the editing element's d attribute changes
+  // Re-parse whenever the editing element's `d` changes.
+  // Depending on the whole document object re-ran a full parsePath on every
+  // pointermove of a drag (each commit produces a new document); keying on the
+  // `d` string itself limits it to actual geometry changes.
+  const editingD = editingElementId
+    ? (findVectoNode(document, editingElementId)?.attributes?.d as string | undefined)
+    : undefined;
+
   useEffect(() => {
-    if (!editingElementId) { setContours([]); return; }
-    const svgNode = findVectoNode(document, editingElementId);
-    const d = svgNode?.attributes?.d as string | undefined;
-    if (!d) { setContours([]); return; }
-    setContours(parsePath(d));
-  }, [editingElementId, document]);
+    setContours(editingD ? parsePath(editingD) : []);
+  }, [editingElementId, editingD]);
 
   // ── Drag state (refs — no setState during drag) ───────────────────────────
 
@@ -179,6 +182,10 @@ export const PathEditOverlay = memo(function PathEditOverlay({
     dragRef.current = null;
     endUndoBatch();
   }, []);
+
+  // pointercancel / lost capture never fire onPointerUp — without this the undo
+  // batch opened on drag start would stay open and stop history recording.
+  const onPointerCancel = onPointerUp;
 
   // ── Anchor double-click: toggle smooth ↔ corner ───────────────────────────
 
@@ -285,6 +292,8 @@ export const PathEditOverlay = memo(function PathEditOverlay({
       style={{ display: "block", pointerEvents: "none" }}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      onLostPointerCapture={onPointerCancel}
       onPointerDown={onOverlayPointerDown}
     >
       {contours.map((contour, ci) => {

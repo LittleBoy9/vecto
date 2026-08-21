@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -14,6 +14,7 @@ import { useSettingsStore, activeKey } from "../../store/settingsStore";
 import { useThemeStore } from "../../store/themeStore";
 import { useRecentStore } from "../../store/recentStore";
 import { useContextMenuStore } from "../../store/contextMenuStore";
+import { setFileController } from "../../lib/fileController";
 
 // ── Tool button ───────────────────────────────────────────────────────────────
 
@@ -173,6 +174,12 @@ export function Toolbar() {
       console.error("Failed to save file:", err);
     }
   };
+
+  // Expose file actions to the global keyboard hook (⌘O / ⌘S / ⌘⇧S).
+  useEffect(() => {
+    setFileController({ open: handleOpen, save: handleSave, saveAs: handleSaveAs });
+    return () => setFileController(null);
+  });
 
   // ── Undo / Redo ─────────────────────────────────────────────────────────────
 

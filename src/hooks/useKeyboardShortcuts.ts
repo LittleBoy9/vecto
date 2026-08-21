@@ -10,6 +10,7 @@ import {
   groupSelection, ungroupSelection, reorderSelection,
 } from "../lib/editActions";
 import { getCanvasController } from "../lib/canvasController";
+import { getFileController } from "../lib/fileController";
 
 const DRAW_TOOLS = ["rect", "ellipse", "line", "pen", "text"];
 
@@ -77,6 +78,12 @@ export function useKeyboardShortcuts() {
             return;
           case "]": e.preventDefault(); reorderSelection("front"); return;
           case "[": e.preventDefault(); reorderSelection("back"); return;
+          case "s":
+            e.preventDefault();
+            if (e.shiftKey) getFileController()?.saveAs();
+            else getFileController()?.save();
+            return;
+          case "o": e.preventDefault(); getFileController()?.open(); return;
         }
         // Swallow any other modifier combo so it can't fall through to tools.
         return;

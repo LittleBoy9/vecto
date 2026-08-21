@@ -28,7 +28,7 @@ import { memo, useCallback, useRef, useState } from "react";
 import { useSelectionStore } from "../../store/selectionStore";
 import { useDocumentStore, beginUndoBatch, endUndoBatch } from "../../store/documentStore";
 import { useUIStore } from "../../store/uiStore";
-import { canvasRegistry } from "../../lib/canvasRegistry";
+import { canvasRegistry, nodeIdForElement } from "../../lib/canvasRegistry";
 import { getDocBBox as getBBoxForId, unionDocBBox as unionBBox } from "../../lib/bbox";
 import type { BoundingBox, VectoDocument, VectoNode } from "../../types/svg";
 
@@ -36,28 +36,27 @@ import type { BoundingBox, VectoDocument, VectoNode } from "../../types/svg";
 
 function fmt(n: number) { return parseFloat(n.toFixed(4)).toString(); }
 
-/** Map a DOM element (or its nearest registered ancestor) back to a node id. */
-function nodeIdForElement(el: Element | null): string | null {
-  let cur: Element | null = el;
-  while (cur) {
-    for (const [id, reg] of canvasRegistry) {
-      if (reg === cur) return id;
-    }
-    cur = cur.parentElement;
-  }
-  return null;
-}
-
 /**
- * Top-most canvas node under a screen point. Walks the full hit stack so the
- * selection move-rect (and any overlay chrome) is skipped in favour of the real
- * element beneath it — this is what lets you click an element that lies inside
- * the current selection's bounding box.
+ * Top-most *selectable* canvas node under a screen point. Walks the full hit
+ * stack so the selection move-rect (and any overlay chrome) is skipped in favour
+ * of the real element beneath it — this is what lets you click an element that
+ * lies inside the current selection's bounding box.
+ *
+ * Locked and hidden nodes are skipped: SvgNode's own pointerdown respects the
+ * lock, but this path bypasses it, so click-through could select a locked
+ * element that is not clickable anywhere else.
  */
-function topNodeUnderPoint(clientX: number, clientY: number): string | null {
+function topNodeUnderPoint(
+  doc: VectoDocument,
+  clientX: number,
+  clientY: number
+): string | null {
   for (const el of document.elementsFromPoint(clientX, clientY)) {
     const id = nodeIdForElement(el);
-    if (id) return id;
+    if (!id) continue;
+    const node = findVectoNode(doc, id);
+    if (node && (node.locked || !node.visible)) continue;
+    return id;
   }
   return null;
 }
@@ -306,7 +305,7 @@ export const SelectionOverlay = memo(function SelectionOverlay({
       // element under the cursor so elements *inside* the selection bbox can be
       // picked. (Handle clicks with no drag do nothing.)
       if (dr.mode === "move") {
-        const id = topNodeUnderPoint(e.clientX, e.clientY);
+        const id = topNodeUnderPoint(document, e.clientX, e.clientY);
         if (id) {
           if (dr.shiftKey) addToSelection(id);
           else select([id]);
@@ -335,7 +334,21 @@ export const SelectionOverlay = memo(function SelectionOverlay({
     }
 
     if (dr.batchStarted) endUndoBatch();
-  }, [selectedIds, updateNodeAttributes, select, addToSelection, clearSelection]);
+  }, [document, selectedIds, updateNodeAttributes, select, addToSelection, clearSelection]);
+
+  /**
+   * An interrupted drag (pointercancel, or capture stolen) never reaches
+   * onPointerUp. Without this the open undo batch stayed open for the rest of
+   * the session — silently disabling undo — and dragRef stayed populated, so
+   * the next pointer move resumed dragging from stale state.
+   */
+  const onPointerCancel = useCallback(() => {
+    const dr = dragRef.current;
+    if (!dr) return;
+    dragRef.current = null;
+    setGuides({ x: null, y: null });
+    if (dr.batchStarted) endUndoBatch();
+  }, []);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -370,6 +383,8 @@ export const SelectionOverlay = memo(function SelectionOverlay({
       style={{ display: "block", pointerEvents: "none" }}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      onLostPointerCapture={onPointerCancel}
     >
       {/* ── Hover outline ─────────────────────────────────────────────── */}
       {hoverRect && (

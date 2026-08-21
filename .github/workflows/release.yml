@@ -78,12 +78,15 @@ jobs:
             exit 1
           fi
 
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists — no release."
-            echo "release=false" >> "$GITHUB_OUTPUT"
-          elif [ "${{ inputs.force }}" = "true" ]; then
+          # Force is checked FIRST. A failed run leaves the tag behind, which is
+          # precisely when a re-run is needed — testing tag-existence first made
+          # the force input unreachable in the only case it exists for.
+          if [ "${{ inputs.force }}" = "true" ]; then
             echo "Forced release of $TAG."
             echo "release=true" >> "$GITHUB_OUTPUT"
+          elif git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — no release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
           else
             echo "New version $VERSION — releasing."
             echo "release=true" >> "$GITHUB_OUTPUT"
@@ -91,11 +94,16 @@ jobs:
 
       - name: Create tag
         if: steps.decide.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.decide.outputs.tag }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.decide.outputs.tag }}" -m "Vecto ${{ steps.decide.outputs.tag }}"
-          git push origin "${{ steps.decide.outputs.tag }}"
+          # On a forced re-run the tag may already exist and point at the commit
+          # that failed. Move it, or the build jobs would check out the tag and
+          # rebuild the very code the re-run is meant to replace.
+          git tag -fa "$TAG" -m "Vecto $TAG"
+          git push -f origin "$TAG"
 
       # ONE draft. Build jobs upload into it by id; nothing else creates a release.
       - name: Create draft release
@@ -104,6 +112,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # A failed run leaves a draft holding whichever platforms did build.
+          # Start clean so the manifest can never mix assets across attempts.
+          STALE=$(gh api "repos/${{ github.repository }}/releases" --paginate \
+            --jq ".[] | select(.tag_name==\"${{ steps.decide.outputs.tag }}\") | .id" || true)
+          for id in $STALE; do
+            echo "Removing stale release $id"
+            gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
+          done
           ID=$(gh api "repos/${{ github.repository }}/releases" \
             -f tag_name="${{ steps.decide.outputs.tag }}" \
             -f name="Vecto ${{ steps.decide.outputs.tag }}" \
@@ -161,6 +177,46 @@ jobs:
 
       - run: npm ci
 
+      # GitHub maps a missing secret to an EMPTY STRING, not to "absent". Tauri
+      # treats a present-but-empty APPLE_CERTIFICATE as "a certificate was
+      # supplied" and runs `security import` on nothing, which fails with
+      # "SecKeychainItemImport: One or more parameters ... were not valid" and
+      # takes the whole macOS build down. So the Apple variables are exported
+      # only when they actually carry a value. This is what lets the pipeline be
+      # signing-ready today and signed later with no workflow edit.
+      - name: Configure Apple code signing
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          CERT: ${{ secrets.APPLE_CERTIFICATE }}
+          CERT_PW: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          A_ID: ${{ secrets.APPLE_ID }}
+          A_PW: ${{ secrets.APPLE_PASSWORD }}
+          A_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$CERT" ]; then
+            echo "No Apple certificate configured — building UNSIGNED."
+            echo "Users will need System Settings > Privacy & Security > Open Anyway."
+            exit 0
+          fi
+          echo "Apple certificate present — the build will be signed."
+          {
+            echo "APPLE_CERTIFICATE<<__TAURI_EOF__";          echo "$CERT";      echo "__TAURI_EOF__"
+            echo "APPLE_CERTIFICATE_PASSWORD<<__TAURI_EOF__"; echo "$CERT_PW";   echo "__TAURI_EOF__"
+            echo "APPLE_SIGNING_IDENTITY<<__TAURI_EOF__";     echo "$IDENTITY";  echo "__TAURI_EOF__"
+          } >> "$GITHUB_ENV"
+          if [ -n "$A_ID" ] && [ -n "$A_PW" ] && [ -n "$A_TEAM" ]; then
+            echo "Notarization credentials present — the build will be notarized."
+            {
+              echo "APPLE_ID<<__TAURI_EOF__";       echo "$A_ID";   echo "__TAURI_EOF__"
+              echo "APPLE_PASSWORD<<__TAURI_EOF__"; echo "$A_PW";   echo "__TAURI_EOF__"
+              echo "APPLE_TEAM_ID<<__TAURI_EOF__";  echo "$A_TEAM"; echo "__TAURI_EOF__"
+            } >> "$GITHUB_ENV"
+          else
+            echo "Notarization credentials incomplete — signing without notarizing."
+          fi
+
       - name: Build and upload installers
         uses: tauri-apps/tauri-action@v0
         id: tauri
@@ -170,15 +226,8 @@ jobs:
           # the updater rejects every download.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # OS code signing — optional today, picked up automatically once set.
-          # Until the Apple secrets exist, macOS builds are unsigned and will be
-          # refused by Gatekeeper on other people's machines. See RELEASING.md.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Apple signing variables are NOT listed here on purpose — see the
+          # "Configure Apple code signing" step above.
         with:
           releaseId: ${{ needs.gate.outputs.release_id }}
           args: --target ${{ matrix.target }}

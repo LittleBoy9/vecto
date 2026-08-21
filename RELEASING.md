@@ -29,8 +29,17 @@ itself — otherwise every typo fix would become a user-facing update.
 together. The gate job **fails the build if they disagree**, so a hand-edited
 version can't ship a binary stamped differently from its own tag.
 
-To re-run a release for a version that already has a tag, use the **Run workflow**
-button on the Release workflow with `force` checked.
+To re-run a release for a version that already has a tag — which is the state a
+failed run leaves behind — use the **Run workflow** button on the Release
+workflow with `force` checked. Forcing moves the tag to the current commit and
+deletes the stale draft first, so the re-run builds the fixed code and cannot mix
+assets from two attempts.
+
+> **Do not add an Apple secret with an empty value.** GitHub maps a *missing*
+> secret to an empty string, and Tauri reads a present-but-empty
+> `APPLE_CERTIFICATE` as "a certificate was supplied", then fails in
+> `security import`. The workflow only exports the Apple variables when they
+> actually carry a value, so leave them unset until you have a real certificate.
 
 ---
 

@@ -28,8 +28,8 @@ interface SettingsActions {
 /** Default + suggested model ids per provider (the id field is sent to the API). */
 export const PROVIDER_MODELS: Record<Provider, { id: string; label: string }[]> = {
   anthropic: [
-    { id: "claude-opus-4-8", label: "Claude Opus 4.8 — most capable" },
-    { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — balanced" },
+    { id: "claude-opus-5", label: "Claude Opus 5 — most capable" },
+    { id: "claude-sonnet-5", label: "Claude Sonnet 5 — balanced" },
     { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5 — fastest" },
     { id: "claude-fable-5", label: "Claude Fable 5" },
   ],
@@ -52,7 +52,7 @@ export const useSettingsStore = create<SettingsState & SettingsActions>()(
       anthropicKey: "",
       openaiKey: "",
       geminiKey: "",
-      anthropicModel: PROVIDER_MODELS.anthropic[1].id, // Sonnet 4.6
+      anthropicModel: PROVIDER_MODELS.anthropic[1].id, // Sonnet 5
       openaiModel: PROVIDER_MODELS.openai[0].id,
       geminiModel: PROVIDER_MODELS.gemini[0].id,
       settingsOpen: false,

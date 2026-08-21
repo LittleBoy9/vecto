@@ -24,8 +24,15 @@ export interface VectoNode {
   /** The original SVG `id` attribute value, if present. */
   svgId?: string;
   type: VectoNodeType;
-  /** Lowercase tag name as it appears in SVG (e.g. "path", "rect"). */
+  /** Lowercase tag name (e.g. "path", "rect"). All logic compares against this. */
   tagName: string;
+  /**
+   * Original case-sensitive tag name, set only when it differs from `tagName`
+   * (e.g. "clipPath", "linearGradient", "textPath"). SVG element names are
+   * case-sensitive, so the serializer must emit this rather than the lowercased
+   * form — `<clippath>` is not `<clipPath>`.
+   */
+  srcTag?: string;
   /** All SVG attributes as key-value strings (excluding `id` — use svgId). */
   attributes: Record<string, string>;
   children: VectoNode[];

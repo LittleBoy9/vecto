@@ -1,0 +1,255 @@
+name: Release
+
+# Push to main. That is the whole ritual.
+#
+# The trigger is the VERSION, not the push: releasing on every commit would turn
+# every typo fix into a user-facing update. Bump with `npm run release:patch`
+# (which syncs package.json, tauri.conf.json and Cargo.toml together), commit,
+# push — CI tags, builds every platform, and publishes.
+#
+# The three phases exist to fix the failure mode both reference pipelines have:
+# when every matrix job publishes to the release independently, each generates
+# its own latest.json and they race, so the published manifest ends up partial
+# or missing entirely. Here exactly one job writes the manifest, and it runs
+# only after every platform has succeeded.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Release even if the version is unchanged"
+        type: boolean
+        default: false
+
+# Never cancel a run mid-publish — a half-written release is worse than a queue.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # ── PHASE 1 ─────────────────────────────────────────────────────────────────
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+      version: ${{ steps.decide.outputs.version }}
+      tag: ${{ steps.decide.outputs.tag }}
+      release_id: ${{ steps.draft.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need history + tags to know what already shipped
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # Nothing ships that has not passed. A release tag must never be the first
+      # place a broken build is discovered.
+      - name: Type-check
+        run: npx tsc --noEmit
+      - name: Tests
+        run: npm test
+      - name: Build frontend
+        run: npm run build
+
+      - name: Decide whether this is a release
+        id: decide
+        run: |
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          TAG="v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # Every declared version must agree, or the release ships a binary
+          # stamped differently from its own tag.
+          PKG=$(node -p "require('./package.json').version")
+          CARGO=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)
+          if [ "$PKG" != "$VERSION" ] || [ "$CARGO" != "$VERSION" ]; then
+            echo "::error::Version mismatch — tauri.conf.json=$VERSION package.json=$PKG Cargo.toml=$CARGO. Run 'npm run release:patch' rather than editing by hand."
+            exit 1
+          fi
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — no release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          elif [ "${{ inputs.force }}" = "true" ]; then
+            echo "Forced release of $TAG."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version $VERSION — releasing."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create tag
+        if: steps.decide.outputs.release == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.decide.outputs.tag }}" -m "Vecto ${{ steps.decide.outputs.tag }}"
+          git push origin "${{ steps.decide.outputs.tag }}"
+
+      # ONE draft. Build jobs upload into it by id; nothing else creates a release.
+      - name: Create draft release
+        id: draft
+        if: steps.decide.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ID=$(gh api "repos/${{ github.repository }}/releases" \
+            -f tag_name="${{ steps.decide.outputs.tag }}" \
+            -f name="Vecto ${{ steps.decide.outputs.tag }}" \
+            -F draft=true -F prerelease=false \
+            -f body="Installers for macOS and Windows are attached below. Existing installs update themselves." \
+            --jq .id)
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          echo "Draft release id: $ID"
+
+  # ── PHASE 2 ─────────────────────────────────────────────────────────────────
+  build:
+    name: ${{ matrix.label }}
+    needs: gate
+    if: needs.gate.outputs.release == 'true'
+    strategy:
+      # Surface every broken platform in one run instead of one per push. The
+      # publish job still requires all of them, so nothing ships half-built.
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS · Apple Silicon
+            os: macos-latest
+            target: aarch64-apple-darwin
+            key: darwin-aarch64
+          - label: macOS · Intel
+            os: macos-latest
+            target: x86_64-apple-darwin
+            key: darwin-x86_64
+          - label: Windows · x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            key: windows-x86_64
+          - label: Windows · 32-bit
+            os: windows-latest
+            target: i686-pc-windows-msvc
+            key: windows-i686
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - run: npm ci
+
+      - name: Build and upload installers
+        uses: tauri-apps/tauri-action@v0
+        id: tauri
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the update payload. Without these the .sig files are absent and
+          # the updater rejects every download.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # OS code signing — optional today, picked up automatically once set.
+          # Until the Apple secrets exist, macOS builds are unsigned and will be
+          # refused by Gatekeeper on other people's machines. See RELEASING.md.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          releaseId: ${{ needs.gate.outputs.release_id }}
+          args: --target ${{ matrix.target }}
+
+      # Each job records ONLY its own platform entry. Phase 3 merges them, so no
+      # two jobs ever write the same manifest.
+      - name: Record updater entry
+        shell: bash
+        env:
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          PLATFORM_KEY: ${{ matrix.key }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: node .github/scripts/record-update-entry.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: update-entry-${{ matrix.key }}
+          path: update-entry.json
+          if-no-files-found: error
+
+  # ── PHASE 3 ─────────────────────────────────────────────────────────────────
+  publish:
+    name: Merge manifest and publish
+    needs: [gate, build]
+    # `needs` already requires every build job to have succeeded — this is what
+    # makes a partial release impossible.
+    if: needs.gate.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.tag }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: update-entry-*
+          path: entries
+          merge-multiple: false
+
+      - name: Merge into one latest.json
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: node .github/scripts/merge-manifest.mjs entries latest.json
+
+      - name: Upload manifest and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          RELEASE_ID: ${{ needs.gate.outputs.release_id }}
+        run: |
+          # Replace any partial manifest a build job may have left behind.
+          gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --jq '.[] | select(.name=="latest.json") | .id' \
+            | while read -r id; do gh api -X DELETE "repos/${{ github.repository }}/releases/assets/$id"; done
+          gh release upload "$TAG" latest.json --clobber
+          # Only now does the release — and therefore the updater endpoint — go live.
+          gh release edit "$TAG" --draft=false --latest
+
+      - name: Verify the live endpoint
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          URL="https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
+          for i in 1 2 3 4 5; do
+            sleep 5
+            CODE=$(curl -sS -o live.json -w "%{http_code}" -L "$URL" || true)
+            [ "$CODE" = "200" ] && break
+            echo "attempt $i: HTTP $CODE"
+          done
+          if [ "$CODE" != "200" ]; then
+            echo "::error::Updater endpoint returned $CODE. Users cannot update."
+            exit 1
+          fi
+          node .github/scripts/verify-manifest.mjs live.json "$VERSION"

@@ -475,15 +475,42 @@ export const useDocumentStore = create<DocumentStore>()(
 // single undo entry. Snapshot the current document into history BEFORE pausing —
 // resume() alone does not create an entry — then pause until endUndoBatch().
 
+// Batches are depth-counted. A bare pause()/resume() pair is not safe here:
+// an unmatched begin (an interrupted drag, a component unmounting mid-edit)
+// left the temporal store paused FOREVER, so every later edit was silently
+// dropped from history and undo quietly stopped working for the whole session.
+let batchDepth = 0;
+
 export function beginUndoBatch() {
-  const { pastStates } = useDocumentStore.temporal.getState();
-  useDocumentStore.temporal.setState({
-    pastStates: [...pastStates, { document: useDocumentStore.getState().document }],
-    futureStates: [],
-  });
-  useDocumentStore.temporal.getState().pause();
+  if (batchDepth === 0) {
+    const { pastStates } = useDocumentStore.temporal.getState();
+    useDocumentStore.temporal.setState({
+      pastStates: [...pastStates, { document: useDocumentStore.getState().document }],
+      futureStates: [],
+    });
+    useDocumentStore.temporal.getState().pause();
+  }
+  batchDepth++;
 }
 
 export function endUndoBatch() {
+  if (batchDepth === 0) return; // unmatched end — nothing to close
+  batchDepth--;
+  if (batchDepth === 0) useDocumentStore.temporal.getState().resume();
+}
+
+/**
+ * Close every open batch and resume recording, whatever the depth. The safety
+ * net for interrupted interactions: pointercancel, lost pointer capture, or a
+ * component unmounting while an edit is still open.
+ */
+export function resetUndoBatch() {
+  if (batchDepth === 0) return;
+  batchDepth = 0;
   useDocumentStore.temporal.getState().resume();
+}
+
+/** True while a batch is open — recording is paused. */
+export function isUndoBatchOpen() {
+  return batchDepth > 0;
 }

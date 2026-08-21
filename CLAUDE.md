@@ -68,7 +68,13 @@ Untrusted SVG (files, drag-drop, AI output, traced images) is XSS-risky because
 `rawDefs`/`rawContent` are injected via `dangerouslySetInnerHTML`. `parseSVG` runs
 `sanitizeSvgDom` on the parsed DOM **before** reading any attribute or innerHTML —
 it removes `<script>`/`<foreignObject>` subtrees, all `on*` event-handler
-attributes, and `javascript:` URLs. Defense-in-depth: `tauri.conf.json` now sets a
+attributes, and any URL whose scheme is not allowlisted. URL checking strips
+control characters first and then **allowlists** schemes (http/https/mailto/tel,
+plus raster `data:image/*`): browsers strip tab/newline/CR from URLs before
+resolving the scheme, so a denylist like `/^\s*javascript:/` is defeated by
+`java&#10;script:`. `data:image/svg+xml` is rejected — it can carry its own script.
+Text typed into the Properties panel is XML-escaped before it reaches
+`rawContent`, which is injected as markup. Defense-in-depth: `tauri.conf.json` now sets a
 strict CSP (`script-src 'self'`, no inline scripts in prod); `devCsp` loosens it for
 Vite HMR only. Do not reintroduce `csp: null` or inline `<script>` in index.html.
 
@@ -97,6 +103,38 @@ create a history entry. Call sites: `SelectionOverlay` (move/resize/rotate),
 (text content edit). Single store actions (`duplicateNodes`, `reorderNodes`,
 `nudgeNodes`, etc.) are already one `set()` → one step, so they don't batch.
 
+**Batches are depth-counted.** A bare `pause()`/`resume()` pair is unsafe here: an
+unmatched `begin` — an interrupted drag, a component unmounting mid-edit — used to
+leave the temporal store paused *forever*, silently dropping every later edit from
+history. Undo looked enabled but recorded nothing for the rest of the session.
+- In components, prefer the `useUndoBatch()` hook over calling begin/end directly:
+  it makes `begin` idempotent and closes the batch automatically on unmount.
+- Drag surfaces must handle `onPointerCancel` **and** `onLostPointerCapture`, not
+  just `onPointerUp` — a cancelled drag never reaches pointerup.
+- Anything dragging without pointer capture (e.g. a range input) must close its
+  batch from a **window**-level pointerup listener; releasing outside the window
+  never fires the element's own handler.
+- `resetUndoBatch()` force-closes any depth as a last-resort recovery.
+
+---
+
+### 8. Releases are triggered by the version field, not by pushing
+
+`npm run release:*` bumps `tauri.conf.json`, `package.json` and `Cargo.toml`
+together; pushing to `main` with a changed version tags, builds four installers,
+and publishes. Pushing without a version change just runs tests.
+
+The release workflow is split into gate → build → publish **on purpose**. If every
+matrix job publishes to the release itself, each generates its own `latest.json`
+and they race — the last writer wins and the other platforms disappear from the
+manifest, leaving installers attached to a release whose updater endpoint 404s.
+So: exactly one job writes the manifest, and it runs only after all four builds
+succeed. Never move manifest generation into the matrix.
+
+Auto-update is **consent-first**. Vecto holds unsaved artwork behind `isDirty`,
+so nothing downloads or relaunches unasked, and the restart path writes a
+crash-recovery snapshot first. See [RELEASING.md](RELEASING.md).
+
 ---
 
 ## File Map
@@ -121,7 +159,8 @@ src/
 │   ├── themeStore.ts              "dark" | "light" theme (persist); toggles .light/.dark on <html>
 │   ├── contextMenuStore.ts        Right-click menu state (open/x/y/items)
 │   ├── panelStore.ts              Persisted left/right panel widths (vecto-panels)
-│   └── recentStore.ts             Recent file paths (persist, vecto-recent)
+│   ├── recentStore.ts             Recent file paths (persist, vecto-recent)
+│   └── updateStore.ts             Auto-update phase/progress/dismissed versions
 ├── lib/
 │   ├── svgParser.ts               SVG string → VectoDocument
 │   │                              sanitizeSvgDom strips <script>/<foreignObject>/on*/javascript: on import
@@ -131,6 +170,7 @@ src/
 │   │                              serializeFragment auto-includes the defs its nodes reference
 │   ├── pathParser.ts              SVG d attr ↔ PathContour[]/AnchorNode[]
 │   │                              parsePath(d) / serializePath(contours)
+│   │                              arcs (A) decomposed to cubic béziers on parse
 │   ├── canvasRegistry.ts          nodeId → SVGGraphicsElement map
 │   ├── nodeUtils.ts               cloneWithFreshIds / findNode / findParentList / containsId
 │   │                              cloneNodesWithDefs (clone + gradient/filter ref remap)
@@ -144,8 +184,11 @@ src/
 │   ├── gradient.ts                make/angle/preview helpers for linear & radial gradients
 │   ├── effects.ts                 makeFilter / newFilterId (drop-shadow & blur defaults)
 │   ├── canvasController.ts        imperative bridge: fitToView / zoomToSelection (keys → Canvas)
+│   ├── fileController.ts         imperative bridge: open / save / saveAs (keys → Toolbar)
 │   ├── aiEdit.ts                  runAiEdit(nodeIds, instruction) — 1:1 in-place edit/recolor stream
 │   ├── recovery.ts                localStorage crash-recovery snapshot (save/load/clear)
+│   ├── updater.ts                 Consent-first auto-update: check/download/install
+│   │                              Writes a recovery snapshot before relaunching
 │   └── utils.ts                   cn(), nodeIcon(), colorToHex()
 ├── components/
 │   ├── canvas/
@@ -182,14 +225,20 @@ src/
 │   ├── ui/ContextMenu.tsx         Global right-click menu (portal); canvas + layer rows
 │   ├── ui/FontPicker.tsx          Font-family dropdown; each option previewed in its own font
 │   ├── ui/RecoveryBanner.tsx      Restore/Discard autosaved doc after crash (top banner)
+│   ├── ui/UpdateBanner.tsx        Update available → download → restart (unsaved-work guard)
 │   └── prompt/PromptBar.tsx       2-row textarea, char counter, expand modal
 │                                  ⊞ button → VariantTray (N thumbnails, click to apply)
 │                                  style preset chips (flat/gradient/3D/line/sticker/minimal)
 ├── hooks/
+│   ├── useUndoBatch.ts           Scoped undo batch; auto-closes on unmount
+│   ├── useUpdateCheck.ts         Silent auto-update probe 4s after launch
 │   ├── useKeyboardShortcuts.ts    Tools + edit/z-order/nudge/clipboard + view + Delete/Esc/⌘Z
 │   ├── useFileDrop.ts             Drag .svg (open) / image (trace) onto the window
 │   └── useAutosave.ts             Snapshot dirty doc to localStorage every 4s (crash recovery)
 └── app/App.tsx                    Root layout
+
+Tests live beside the code they cover (`*.test.ts`, run with `npm test`):
+svgRoundTrip · sanitize · pathParser · undoBatch.
 
 src-tauri/
 ├── src/
@@ -197,7 +246,8 @@ src-tauri/
 │   ├── lib.rs                     Plugin + handler registration
 │   └── commands/
 │       ├── mod.rs
-│       ├── ai.rs                  generate_svg_stream (full doc) + edit_svg_stream (selection)
+│       ├── ai.rs                  cancel_ai + 180s request timeout on every call
+│       │                          generate_svg_stream (full doc) + edit_svg_stream (selection)
 │       │                          generate_svg_variants (N concurrent, non-streaming)
 │       │                          multi-provider SSE; model id passed per-call from settings
 │       │                          emits svg:chunk / svg:edit-chunk events
@@ -205,7 +255,7 @@ src-tauri/
 │       ├── trace.rs               trace_image (raster → SVG via vtracer, spawn_blocking)
 │       └── fs_commands.rs         open_svg_file / save_svg_file
 ├── tauri.conf.json                CSP set (prod strict, devCsp allows Vite HMR); no more csp:null
-└── capabilities/default.json
+└── capabilities/default.json     dialog only — fs/shell plugins removed (were unused)
 ```
 
 ---
@@ -228,8 +278,9 @@ src-tauri/
 | `Escape` | In nodeEdit/draw: exit to select. Otherwise: clear selection |
 | `⌘Z` / `Ctrl+Z` | Undo |
 | `⌘⇧Z` / `Ctrl+⇧Z` | Redo |
-| `⌘O` / `Ctrl+O` | Open file (toolbar button) |
-| `⌘S` / `Ctrl+S` | Save file (toolbar button) |
+| `⌘O` / `Ctrl+O` | Open file |
+| `⌘S` / `Ctrl+S` | Save file |
+| `⌘⇧S` / `Ctrl+⇧S` | Save As |
 | Scroll | Pan canvas |
 | `⌘`+Scroll / Pinch | Zoom canvas |
 | Drag rotate handle | Rotate selection (`⇧` = snap 15°) |
@@ -258,6 +309,10 @@ When `activeTool === "nodeEdit"`:
 - All node sizes (anchors, handles, strokes) are divided by zoom to stay constant on screen
 - `pathEditStore.editingElementId` holds the VectoNode ID of the path being edited
 - Only `<path>` elements (with a `d` attribute) support node editing
+- Arcs (`A`) are decomposed to cubic béziers on parse, so they survive editing.
+  `serializePath` emits only `M/L/C/Z`, so without that any edit to a path
+  containing an arc flattened it to a straight line — a circle converted to a
+  path collapsed to a zero-area sliver.
 
 Entering node-edit (all set `editingElementId`):
 - Double-click a `<path>` (from any tool) — `SvgNode.handleDoubleClick`
@@ -323,6 +378,12 @@ npm run tauri dev
 
 # Production build
 npm run tauri build
+
+# Tests (vitest + jsdom) — parser/serializer/path/undo regressions
+npm test
+
+# Cut a release — bumps all three version fields, then push to main
+npm run release:patch   # or release:minor / release:major
 ```
 
 Open the app, click the ⚙ icon in the toolbar (or "Set API key" in the prompt bar),

@@ -24,3 +24,6 @@ src-tauri/gen/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local tooling
+.code-review-graph/

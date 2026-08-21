@@ -67,8 +67,126 @@ type AbsCmd =
   | { type: "M"; x: number; y: number }
   | { type: "L"; x: number; y: number }
   | { type: "C"; x1: number; y1: number; x2: number; y2: number; x: number; y: number }
-  | { type: "A"; x: number; y: number } // we only need the endpoint for editing
   | { type: "Z" };
+
+/**
+ * Convert an SVG elliptical arc to a series of cubic béziers.
+ *
+ * Arcs used to be kept as bare endpoints with no handles, which meant that
+ * merely touching one anchor in the node editor re-serialized the whole path
+ * as M/L/C and flattened every arc into a straight line — a circle converted
+ * to a path collapsed to a zero-area sliver. Decomposing to cubics on parse
+ * makes arcs first-class: they survive editing and become editable curves.
+ *
+ * Implements the endpoint→center parameterization from the SVG 1.1 spec
+ * (Appendix F.6.5), then splits the sweep into segments of at most 90°.
+ */
+function arcToCubics(
+  x1: number, y1: number,
+  rxIn: number, ryIn: number,
+  rotationDeg: number,
+  largeArc: boolean, sweep: boolean,
+  x2: number, y2: number
+): { x1: number; y1: number; x2: number; y2: number; x: number; y: number }[] {
+  // Degenerate radii, or a zero-length arc, is a straight line by spec.
+  let rx = Math.abs(rxIn);
+  let ry = Math.abs(ryIn);
+  if (rx === 0 || ry === 0 || (x1 === x2 && y1 === y2)) {
+    return [{ x1, y1, x2, y2, x: x2, y: y2 }];
+  }
+
+  const phi = (rotationDeg * Math.PI) / 180;
+  const cosPhi = Math.cos(phi);
+  const sinPhi = Math.sin(phi);
+
+  // Step 1: translate/rotate into the ellipse's own frame.
+  const dx2 = (x1 - x2) / 2;
+  const dy2 = (y1 - y2) / 2;
+  const x1p = cosPhi * dx2 + sinPhi * dy2;
+  const y1p = -sinPhi * dx2 + cosPhi * dy2;
+
+  // Step 2: scale radii up if they're too small to span the endpoints.
+  const lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+  if (lambda > 1) {
+    const s = Math.sqrt(lambda);
+    rx *= s;
+    ry *= s;
+  }
+
+  // Step 3: locate the ellipse center in the rotated frame.
+  const rxSq = rx * rx;
+  const rySq = ry * ry;
+  const num = rxSq * rySq - rxSq * y1p * y1p - rySq * x1p * x1p;
+  const den = rxSq * y1p * y1p + rySq * x1p * x1p;
+  const factor = Math.sqrt(Math.max(0, num / den)) * (largeArc === sweep ? -1 : 1);
+  const cxp = (factor * rx * y1p) / ry;
+  const cyp = (-factor * ry * x1p) / rx;
+
+  // Step 4: back to user space.
+  const cx = cosPhi * cxp - sinPhi * cyp + (x1 + x2) / 2;
+  const cy = sinPhi * cxp + cosPhi * cyp + (y1 + y2) / 2;
+
+  // Step 5: start angle and sweep.
+  const angle = (ux: number, uy: number, vx: number, vy: number) => {
+    const dot = ux * vx + uy * vy;
+    const len = Math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy));
+    let a = Math.acos(Math.min(1, Math.max(-1, dot / (len || 1))));
+    if (ux * vy - uy * vx < 0) a = -a;
+    return a;
+  };
+  const sx = (x1p - cxp) / rx;
+  const sy = (y1p - cyp) / ry;
+  const ex = (-x1p - cxp) / rx;
+  const ey = (-y1p - cyp) / ry;
+
+  const theta1 = angle(1, 0, sx, sy);
+  let dTheta = angle(sx, sy, ex, ey);
+  if (!sweep && dTheta > 0) dTheta -= 2 * Math.PI;
+  else if (sweep && dTheta < 0) dTheta += 2 * Math.PI;
+
+  // Step 6: split into <=90° pieces; a cubic can't approximate more accurately.
+  const segments = Math.max(1, Math.ceil(Math.abs(dTheta) / (Math.PI / 2)));
+  const delta = dTheta / segments;
+  // Control-point distance for a circular arc of angle `delta`.
+  const alpha = (4 / 3) * Math.tan(delta / 4);
+
+  const point = (t: number) => {
+    const cosT = Math.cos(t);
+    const sinT = Math.sin(t);
+    return {
+      x: cx + rx * cosT * cosPhi - ry * sinT * sinPhi,
+      y: cy + rx * cosT * sinPhi + ry * sinT * cosPhi,
+    };
+  };
+  const deriv = (t: number) => {
+    const cosT = Math.cos(t);
+    const sinT = Math.sin(t);
+    return {
+      x: -rx * sinT * cosPhi - ry * cosT * sinPhi,
+      y: -rx * sinT * sinPhi + ry * cosT * cosPhi,
+    };
+  };
+
+  const out: { x1: number; y1: number; x2: number; y2: number; x: number; y: number }[] = [];
+  for (let i = 0; i < segments; i++) {
+    const tA = theta1 + i * delta;
+    const tB = tA + delta;
+    const pA = point(tA);
+    const pB = point(tB);
+    const dA = deriv(tA);
+    const dB = deriv(tB);
+    out.push({
+      x1: pA.x + alpha * dA.x,
+      y1: pA.y + alpha * dA.y,
+      x2: pB.x - alpha * dB.x,
+      y2: pB.y - alpha * dB.y,
+      // Snap the final endpoint to the exact target to avoid drift.
+      x: i === segments - 1 ? x2 : pB.x,
+      y: i === segments - 1 ? y2 : pB.y,
+    });
+  }
+  return out;
+}
 
 function toAbsoluteCmds(d: string): AbsCmd[] {
   const tokens = tokenize(d);
@@ -203,12 +321,19 @@ function toAbsoluteCmds(d: string): AbsCmd[] {
         break;
       }
       case "A": {
-        // Skip rx ry rotation large-arc-flag sweep-flag (5 values), keep endpoint
-        num(); num(); num(); num(); num();
+        const rx = num();
+        const ry = num();
+        const rot = num();
+        // Flags are single digits in compact path data ("a5 5 0 1 0 10 0"), and
+        // the tokenizer already splits them out as separate numbers.
+        const largeArc = num() !== 0;
+        const sweep = num() !== 0;
         const x = rel ? cx + num() : num();
         const y = rel ? cy + num() : num();
-        // Treat arc endpoint as a line-style anchor (no bezier handles)
-        cmds.push({ type: "A", x, y });
+        // Decompose to cubics so the arc survives node editing as a real curve.
+        for (const c of arcToCubics(cx, cy, rx, ry, rot, largeArc, sweep, x, y)) {
+          cmds.push({ type: "C", x1: c.x1, y1: c.y1, x2: c.x2, y2: c.y2, x: c.x, y: c.y });
+        }
         prevCPForS = null; prevCPForT = null;
         cx = x; cy = y;
         break;
@@ -270,9 +395,8 @@ export function parsePath(d: string): PathContour[] {
         });
         break;
       }
-      case "L":
-      case "A": {
-        // Line-to or arc-to: new anchor with no handles
+      case "L": {
+        // Line-to: new anchor with no handles
         const prev = currentNodes[currentNodes.length - 1];
         if (!prev) break;
         const nodeIdx = currentNodes.length;

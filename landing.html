@@ -161,6 +161,123 @@
   }
   .btn-primary:hover { box-shadow: 0 12px 44px rgba(14,165,233,0.6); }
 
+  /* ── Download split button ─────────────────────────────── */
+  /* A single "Download" button can only ever deliver one binary, so it could
+     not honour the "Mac & Windows" promise beside it — and macOS additionally
+     splits into Apple Silicon and Intel builds. The split button gives the
+     visitor's own platform as the primary action and keeps every other build
+     one click away, rather than making everyone choose from a wall of buttons. */
+  .dl { display: flex; flex-direction: column; align-items: center; gap: 14px; position: relative; z-index: 2; }
+  .dl-group {
+    position: relative;
+    /* Must outrank .dl-note, which picks up z-index:1 from the generic `.cta p`
+       rule. On hover this element gets a transform, which creates a stacking
+       context and traps .dl-menu's z-index:60 inside it — so the group itself
+       is what competes against the caption, at z-index:auto unless set here. */
+    z-index: 3;
+    display: inline-flex; align-items: stretch;
+    border-radius: 999px; box-shadow: 0 8px 30px rgba(14,165,233,0.4);
+    transition: transform .2s, box-shadow .3s;
+  }
+  .dl-group:hover { transform: translateY(-2px); box-shadow: 0 12px 44px rgba(14,165,233,0.6); }
+  .dl-main, .dl-toggle {
+    font-family: var(--display); font-weight: 600; font-size: 16px; color: #fff;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border: none; display: inline-flex; align-items: center; gap: 10px;
+  }
+  .dl-main { padding: 16px 26px; border-radius: 999px 0 0 999px; }
+  .dl-toggle {
+    padding: 16px 17px; border-radius: 0 999px 999px 0;
+    /* inset instead of border-left so the two halves keep a single silhouette */
+    box-shadow: inset 1px 0 0 rgba(255,255,255,0.24);
+  }
+  .dl-toggle .chev { font-size: 11px; transition: transform .25s; }
+  .dl-group.open .dl-toggle .chev { transform: rotate(180deg); }
+  .dl-os { width: 17px; height: 17px; flex-shrink: 0; }
+  /* The page hides the native cursor, so keyboard focus needs a loud ring. */
+  .dl-main:focus-visible, .dl-toggle:focus-visible, .dl-item:focus-visible {
+    outline: 2px solid #fff; outline-offset: 3px;
+  }
+
+  .dl-menu {
+    position: absolute; top: calc(100% + 14px); left: 50%;
+    transform: translateX(-50%) translateY(-8px);
+    min-width: 330px; padding: 8px; text-align: left; z-index: 60;
+    background: rgba(15,15,21,0.985);
+    -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px);
+    border: 1px solid var(--border); border-radius: 20px;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.65);
+    opacity: 0; visibility: hidden;
+    transition: opacity .22s, transform .22s, visibility 0s linear .22s;
+  }
+  .dl-group.open .dl-menu {
+    opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0);
+    transition: opacity .22s, transform .22s, visibility 0s;
+  }
+  .dl-menu.up { top: auto; bottom: calc(100% + 14px); transform: translateX(-50%) translateY(8px); }
+  .dl-group.open .dl-menu.up { transform: translateX(-50%) translateY(0); }
+  .dl-mlabel {
+    font-family: var(--display); font-size: 10.5px; letter-spacing: 1.4px;
+    text-transform: uppercase; color: var(--muted); padding: 10px 14px 6px;
+  }
+  .dl-item {
+    display: flex; align-items: center; gap: 12px; width: 100%;
+    padding: 10px 14px; border-radius: 12px; color: var(--text);
+    background: none; border: none; font-family: var(--body); font-size: 14px;
+    text-align: left; transition: background .18s;
+  }
+  .dl-item:hover { background: rgba(255,255,255,0.07); }
+  .dl-item .t { flex: 1; }
+  .dl-item .m { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .dl-item.current .t::after {
+    content: "Detected"; margin-left: 8px; font-size: 10px; letter-spacing: .6px;
+    text-transform: uppercase; color: var(--lime); vertical-align: 1px;
+  }
+  .dl-sep { height: 1px; background: var(--border); margin: 6px 10px; }
+  .dl .dl-note {
+    position: relative;
+    z-index: 0;
+    margin: 0;
+    max-width: none;
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+  .dl-note b { color: var(--text); font-weight: 500; }
+  .dl-note .sep { opacity: .4; margin: 0 7px; }
+  .dl-fallback { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+
+  /* First-launch help. Collapsed by default so it never undercuts the CTA, but
+     present so the Gatekeeper warning does not read as a broken download.
+     Selectors are scoped under .dl and use div rather than p, because the
+     generic `.cta p` rule outranks a single-class selector and would silently
+     restyle anything placed here. */
+  .dl-help { position: relative; z-index: 0; text-align: center; }
+  .dl-help summary {
+    list-style: none; font-family: var(--body); font-size: 12px; color: var(--muted);
+    text-decoration: underline; text-underline-offset: 3px;
+    display: inline-flex; align-items: center; gap: 6px; transition: color .2s;
+  }
+  .dl-help summary::-webkit-details-marker { display: none; }
+  .dl-help summary::after { content: "▾"; font-size: 9px; transition: transform .2s; }
+  .dl-help[open] summary::after { transform: rotate(180deg); }
+  .dl-help summary:hover { color: var(--text); }
+  .dl-help summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+  .dl .dl-help-body {
+    max-width: 440px; margin: 12px auto 0; padding: 13px 16px;
+    border-radius: 12px; background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    font-size: 12.5px; line-height: 1.7; color: var(--muted); text-align: left;
+  }
+  .dl .dl-help-body b { color: var(--text); font-weight: 600; }
+  .dl .dl-help-body + .dl-help-body { margin-top: 8px; }
+
+  @media (max-width: 560px) {
+    .dl-group { width: 100%; }
+    .dl-main { flex: 1; justify-content: center; padding: 15px 18px; font-size: 15px; }
+    .dl-menu { min-width: 0; width: 100%; }
+  }
+
   /* ── Hero ──────────────────────────────────────────────── */
   .hero { min-height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 120px 28px 60px; perspective: 1200px; }
   .badge {
@@ -269,9 +386,9 @@
     max-width: 780px; margin: 0 auto; padding: 70px 40px; border-radius: 30px;
     background: linear-gradient(180deg, rgba(20,20,28,0.8), rgba(12,12,18,0.6));
     border: 1px solid var(--border); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
-    position: relative; overflow: hidden;
+    position: relative;
   }
-  .cta-box::after { content:""; position:absolute; inset:0; background: radial-gradient(60% 80% at 50% 0%, rgba(14,165,233,0.18), transparent); }
+  .cta-box::after { content:""; position:absolute; inset:0; border-radius: inherit; background: radial-gradient(60% 80% at 50% 0%, rgba(14,165,233,0.18), transparent); }
   .cta h2 { position: relative; z-index: 1; }
   .cta p { color: var(--muted); font-size: 18px; margin: 16px auto 34px; max-width: 460px; position: relative; z-index: 1; }
 
@@ -508,8 +625,72 @@
     <section id="get" class="cta">
       <div class="cta-box reveal">
         <h2>Your next vector is<br />one sentence away.</h2>
-        <p>Free desktop app for Mac &amp; Windows. Bring your own AI key.</p>
-        <a href="#" class="btn btn-primary" data-cursor style="padding:16px 34px; font-size:16px;">Download Vecto <span>↘</span></a>
+        <p>Free and open source. Bring your own AI key — nothing leaves your machine.</p>
+
+        <!-- Platform is named on the button itself, so the copy above no longer
+             has to promise "Mac & Windows" that a single button cannot deliver. -->
+        <div class="dl">
+          <div class="dl-group" id="dlGroup">
+            <a class="dl-main" id="dlMain" data-cursor
+               href="https://github.com/LittleBoy9/vecto/releases/latest">
+              <svg class="dl-os" id="dlIcon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M16.7 12.9c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9-.7 0-1.8-.9-3-.8-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.7 3-.7s1.8.7 3 .7c1.3 0 2.1-1.1 2.8-2.3.9-1.3 1.3-2.6 1.3-2.6s-2.5-1-2.5-3.8zM14.5 5.9c.6-.8 1.1-1.9 1-3-.9 0-2.1.6-2.8 1.4-.6.7-1.2 1.8-1 2.9 1 .1 2.1-.5 2.8-1.3z"/>
+              </svg>
+              <span id="dlLabel">Download Vecto</span>
+            </a>
+            <button class="dl-toggle" id="dlToggle" type="button" data-cursor
+                    aria-haspopup="true" aria-expanded="false" aria-controls="dlMenu"
+                    aria-label="Choose a different platform">
+              <span class="chev" aria-hidden="true">▾</span>
+            </button>
+
+            <div class="dl-menu" id="dlMenu" role="menu" aria-label="All downloads">
+              <div class="dl-mlabel">macOS</div>
+              <a class="dl-item" role="menuitem" data-cursor data-plat="mac-arm"
+                 href="https://github.com/LittleBoy9/vecto/releases/latest">
+                <span class="t">Apple Silicon</span><span class="m">M1 – M4 · .dmg</span>
+              </a>
+              <a class="dl-item" role="menuitem" data-cursor data-plat="mac-intel"
+                 href="https://github.com/LittleBoy9/vecto/releases/latest">
+                <span class="t">Intel</span><span class="m">x86_64 · .dmg</span>
+              </a>
+              <div class="dl-mlabel">Windows</div>
+              <a class="dl-item" role="menuitem" data-cursor data-plat="win"
+                 href="https://github.com/LittleBoy9/vecto/releases/latest">
+                <span class="t">Windows 10 / 11</span><span class="m">x64 · .msi</span>
+              </a>
+              <div class="dl-sep"></div>
+              <a class="dl-item" role="menuitem" data-cursor
+                 href="https://github.com/LittleBoy9/vecto/releases">
+                <span class="t">All versions &amp; release notes</span><span class="m">↗</span>
+              </a>
+            </div>
+          </div>
+
+          <p class="dl-note">
+            <b>Version 0.1.0</b><span class="sep">·</span><span id="dlArch">Universal</span><span class="sep">·</span>Free &amp; open source
+            <br />macOS 10.15+ &nbsp;·&nbsp; Windows 10 (1803) or later
+          </p>
+
+          <details class="dl-help">
+            <summary data-cursor>First launch on macOS?</summary>
+            <div class="dl-help-body">
+              Vecto isn't notarized with Apple yet, so macOS won't open it on the
+              first try — on some Macs the warning even says the app is
+              <b>damaged</b>. It isn't; that's just what an un-notarized app looks
+              like. Open <b>System Settings → Privacy &amp; Security</b>, scroll to
+              <b>Security</b>, and click <b>Open Anyway</b> next to Vecto. You only
+              do this once.
+            </div>
+          </details>
+        </div>
+
+        <noscript>
+          <div class="dl-fallback" style="margin-top:18px;">
+            <a class="btn btn-primary" href="https://github.com/LittleBoy9/vecto/releases/latest">Download for Mac</a>
+            <a class="btn" href="https://github.com/LittleBoy9/vecto/releases/latest">Download for Windows</a>
+          </div>
+        </noscript>
       </div>
     </section>
 
@@ -521,6 +702,101 @@
   </div>
 
 <script type="module">
+  // ── Download: platform detection + split-button menu ────
+  // One place to point at real artifacts. Until a release is published these
+  // all resolve to the releases page, which is correct rather than a 404.
+  const RELEASES = 'https://github.com/LittleBoy9/vecto/releases/latest';
+  const BUILDS = {
+    'mac-arm':   { label: 'Download for Mac',     arch: 'Apple Silicon', url: RELEASES },
+    'mac-intel': { label: 'Download for Mac',     arch: 'Intel',         url: RELEASES },
+    'win':       { label: 'Download for Windows', arch: 'x64',           url: RELEASES },
+  };
+
+  const MAC_ICON = 'M16.7 12.9c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9-.7 0-1.8-.9-3-.8-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.7 3-.7s1.8.7 3 .7c1.3 0 2.1-1.1 2.8-2.3.9-1.3 1.3-2.6 1.3-2.6s-2.5-1-2.5-3.8zM14.5 5.9c.6-.8 1.1-1.9 1-3-.9 0-2.1.6-2.8 1.4-.6.7-1.2 1.8-1 2.9 1 .1 2.1-.5 2.8-1.3z';
+  const WIN_ICON = 'M3 5.5l7.2-1v6.9H3V5.5zm0 13l7.2 1v-6.8H3v5.8zm8.2 1.2L21 21V12.6h-9.8v7.1zM11.2 3v7.4H21V2l-9.8 1z';
+
+  async function detect() {
+    const uad = navigator.userAgentData;
+    const plat = (uad && uad.platform) || navigator.platform || '';
+    const ua = navigator.userAgent || '';
+    const isMac = /mac/i.test(plat) || (/Mac/.test(ua) && !/iPhone|iPad/.test(ua));
+    if (!isMac) return /win/i.test(plat) || /Windows/.test(ua) ? 'win' : null;
+
+    // Safari reports "MacIntel" even on Apple Silicon, so this is only reliable
+    // in Chromium. Everywhere else default to Apple Silicon — it is the far
+    // likelier machine now, and Intel is one click away in the menu.
+    try {
+      if (uad && uad.getHighEntropyValues) {
+        const hev = await uad.getHighEntropyValues(['architecture']);
+        if (hev && hev.architecture === 'x86') return 'mac-intel';
+      }
+    } catch (_) { /* not available — fall through */ }
+    return 'mac-arm';
+  }
+
+  (async () => {
+    const group  = document.getElementById('dlGroup');
+    if (!group) return;
+    const main   = document.getElementById('dlMain');
+    const toggle = document.getElementById('dlToggle');
+    const menu   = document.getElementById('dlMenu');
+    const items  = [...menu.querySelectorAll('.dl-item')];
+
+    const key = await detect();
+    if (key && BUILDS[key]) {
+      const b = BUILDS[key];
+      document.getElementById('dlLabel').textContent = b.label;
+      document.getElementById('dlArch').textContent = b.arch;
+      document.getElementById('dlIcon').firstElementChild.setAttribute(
+        'd', key === 'win' ? WIN_ICON : MAC_ICON);
+      main.href = b.url;
+      const cur = menu.querySelector('[data-plat="' + key + '"]');
+      if (cur) cur.classList.add('current');
+    }
+    // Unknown platform keeps the neutral "Download Vecto" label and the
+    // releases page, so nobody is handed the wrong binary.
+
+    const setOpen = (open) => {
+      if (open) {
+        // Drop up instead of down when the viewport has no room below.
+        menu.classList.remove('up');
+        const spaceBelow = innerHeight - group.getBoundingClientRect().bottom;
+        if (spaceBelow < menu.offsetHeight + 28) menu.classList.add('up');
+      }
+      group.classList.toggle('open', open);
+      toggle.setAttribute('aria-expanded', String(open));
+    };
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setOpen(!group.classList.contains('open'));
+    });
+    document.addEventListener('click', (e) => {
+      if (!group.contains(e.target)) setOpen(false);
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && group.classList.contains('open')) {
+        setOpen(false);
+        toggle.focus();
+      }
+    });
+    // Arrow keys walk the menu once it is open, per the menu button pattern.
+    toggle.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        setOpen(true);
+        void menu.offsetHeight; // force style flush so the item is focusable
+        items[0].focus();
+      }
+    });
+    items.forEach((item, i) => {
+      item.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+        if (e.key === 'ArrowUp')   { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+      });
+      item.addEventListener('click', () => setOpen(false));
+    });
+  })();
+
   // ── Custom cursor ───────────────────────────────────────
   const cur = document.getElementById('cur');
   const ring = document.getElementById('curRing');

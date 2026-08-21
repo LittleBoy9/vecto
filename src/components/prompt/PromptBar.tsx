@@ -26,6 +26,8 @@ interface UseGenerateOptions {
   setDocument: (doc: VectoDocument, filePath?: string) => void;
   clearSelection: () => void;
   onError: (msg: string | null) => void;
+  /** True if the user pressed Stop — suppresses the "no valid SVG" error. */
+  wasCancelled: () => boolean;
 }
 
 async function runGenerate({
@@ -40,6 +42,7 @@ async function runGenerate({
   setDocument,
   clearSelection,
   onError,
+  wasCancelled,
 }: UseGenerateOptions) {
   const trimmed = prompt.trim();
   if (!trimmed || isGenerating) return;
@@ -93,8 +96,9 @@ async function runGenerate({
     const final = extractSvg(accumulated.text);
     if (final) {
       render(final);
-    } else if (!accumulated.text.includes("<svg")) {
-      onError("Claude did not return valid SVG markup. Try rephrasing your prompt.");
+    } else if (!wasCancelled() && !accumulated.text.includes("<svg")) {
+      // A cancelled run legitimately ends with no complete SVG — not an error.
+      onError("The model did not return valid SVG markup. Try rephrasing your prompt.");
     }
   } catch (err) {
     onError(String(err));
@@ -366,6 +370,7 @@ export function PromptBar() {
   const [variants, setVariants] = useState<string[] | null>(null);
   const [variantsBusy, setVariantsBusy] = useState(false);
   const [styleId, setStyleId] = useState<string | null>(null);
+  const cancelledRef = useRef(false);
 
   // Prepend the chosen style preset to the prompt before generation.
   const styled = (p: string) => {
@@ -401,9 +406,11 @@ export function PromptBar() {
     setDocument,
     clearSelection,
     onError: setError,
+    wasCancelled: () => cancelledRef.current,
   };
 
   const handleGenerate = () => {
+    cancelledRef.current = false;
     runGenerate({ ...generateArgs, prompt: styled(prompt) }).then(() => {
       if (expanded) setExpanded(false);
     });
@@ -413,6 +420,7 @@ export function PromptBar() {
     const trimmed = styled(prompt).trim();
     if (!prompt.trim() || variantsBusy || isGenerating) return;
     if (!hasKey) { openSettings(); return; }
+    cancelledRef.current = false;
     setError(null);
     setVariants([]);
     setVariantsBusy(true);
@@ -420,13 +428,20 @@ export function PromptBar() {
       const svgs = await invoke<string[]>("generate_svg_variants", {
         prompt: trimmed, apiKey, provider, model, count: VARIANT_COUNT,
       });
-      setVariants(svgs);
+      setVariants(svgs.length ? svgs : null); // empty = cancelled
+
     } catch (err) {
-      setError(String(err));
+      if (!cancelledRef.current) setError(String(err));
       setVariants(null);
     } finally {
       setVariantsBusy(false);
     }
+  };
+
+  /** Ask the backend to abort whatever generation is in flight. */
+  const cancelRun = () => {
+    cancelledRef.current = true;
+    invoke("cancel_ai").catch(() => { /* nothing in flight */ });
   };
 
   const applyVariant = (svg: string) => {
@@ -572,21 +587,31 @@ export function PromptBar() {
               >
                 {variantsBusy ? <span className="animate-spin inline-block">⟳</span> : "⊞"}
               </button>
-              <button
-                onClick={handleGenerate}
-                disabled={isGenerating || !prompt.trim()}
-                className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium",
-                  "bg-accent text-white hover:bg-accent-hover",
-                  "disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                )}
-              >
-                {isGenerating ? (
-                  <><span className="animate-spin inline-block">⟳</span> Generating</>
-                ) : (
-                  <>✦ Generate</>
-                )}
-              </button>
+              {isGenerating || variantsBusy ? (
+                <button
+                  onClick={cancelRun}
+                  title="Stop the request in flight"
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium",
+                    "bg-surface border border-border text-text-secondary",
+                    "hover:text-danger hover:border-danger transition-colors"
+                  )}
+                >
+                  <span className="animate-spin inline-block">⟳</span> Stop
+                </button>
+              ) : (
+                <button
+                  onClick={handleGenerate}
+                  disabled={!prompt.trim()}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium",
+                    "bg-accent text-white hover:bg-accent-hover",
+                    "disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  )}
+                >
+                  ✦ Generate
+                </button>
+              )}
             </div>
           </div>
         </div>

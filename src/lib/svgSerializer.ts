@@ -17,17 +17,31 @@ function attrsToString(attrs: Record<string, string>): string {
 
 function serializeNode(node: VectoNode, indent = 2): string {
   const pad = " ".repeat(indent);
+  // SVG element names are case-sensitive: <clipPath> must not become <clippath>.
+  const tag = node.srcTag ?? node.tagName;
   const idAttr = node.svgId ? ` id="${escapeAttr(node.svgId)}"` : "";
   // Hidden layers are persisted with display:none so Save never drops them.
   // parseSVG reads display:none back into node.visible = false on reload.
-  const attributes = node.visible
-    ? node.attributes
-    : { ...node.attributes, display: "none" };
+  // Lock has no SVG equivalent, so it round-trips via a data attribute.
+  const attributes = {
+    ...node.attributes,
+    ...(node.visible ? {} : { display: "none" }),
+    ...(node.locked ? { "data-vecto-locked": "true" } : {}),
+  };
   const attrStr = attrsToString(attributes);
   const attrs = [idAttr, attrStr ? ` ${attrStr}` : ""].join("");
 
+  // Text-bearing elements (<text>, <tspan>, <textPath>) hold their content as
+  // markup in rawContent. It is already sanitized on parse, and user-typed text
+  // is escaped at entry (PropertiesPanel), so it is emitted verbatim.
+  // Without this branch every text element serialized as an empty tag and all
+  // copy was silently lost on save, export, and autosave.
+  if (node.rawContent !== undefined) {
+    return `${pad}<${tag}${attrs}>${node.rawContent}</${tag}>`;
+  }
+
   if (node.children.length === 0) {
-    return `${pad}<${node.tagName}${attrs} />`;
+    return `${pad}<${tag}${attrs} />`;
   }
 
   const inner = node.children
@@ -35,7 +49,7 @@ function serializeNode(node: VectoNode, indent = 2): string {
     .filter(Boolean)
     .join("\n");
 
-  return `${pad}<${node.tagName}${attrs}>\n${inner}\n${pad}</${node.tagName}>`;
+  return `${pad}<${tag}${attrs}>\n${inner}\n${pad}</${tag}>`;
 }
 
 function serializeGradient(g: VectoGradient): string {

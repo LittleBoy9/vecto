@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useSettingsStore, PROVIDER_MODELS, type Provider } from "../../store/settingsStore";
+import { useUpdateStore } from "../../store/updateStore";
+import { checkForUpdate } from "../../lib/updater";
+import { getVersion } from "@tauri-apps/api/app";
+import { useEffect as useVersionEffect, useState as useVersionState } from "react";
 import { cn } from "../../lib/utils";
 
 // ── Provider config ───────────────────────────────────────────────────────────
@@ -36,6 +40,57 @@ const PROVIDERS: { id: Provider; label: string; placeholder: string; steps: stri
     ],
   },
 ];
+
+// ── Updates ───────────────────────────────────────────────────────────────────
+
+/**
+ * Manual update check. The automatic probe runs once at launch and stays quiet
+ * on failure, so this is the only place a user can get a definitive answer.
+ */
+function UpdateSection() {
+  const { phase, version, checking } = useUpdateStore();
+  const [current, setCurrent] = useVersionState<string>("");
+  const [checkedAt, setCheckedAt] = useVersionState<number | null>(null);
+
+  useVersionEffect(() => {
+    getVersion().then(setCurrent).catch(() => setCurrent(""));
+  }, []);
+
+  const run = async () => {
+    await checkForUpdate(false);
+    setCheckedAt(Date.now());
+  };
+
+  const upToDate = checkedAt !== null && phase === "idle";
+
+  return (
+    <div className="space-y-2">
+      <label className="block text-xs font-medium text-text-secondary uppercase tracking-wide">
+        Updates
+      </label>
+      <div className="flex items-center gap-3">
+        <span className="text-[11px] text-text-muted flex-1">
+          {current ? <>You're on <span className="text-text-secondary font-mono">v{current}</span></> : "Version unavailable"}
+          {phase === "available" && version && (
+            <span className="text-accent"> · v{version} available</span>
+          )}
+          {upToDate && <span className="text-text-secondary"> · up to date</span>}
+        </span>
+        <button
+          onClick={run}
+          disabled={checking}
+          className={cn(
+            "px-3 py-1.5 text-xs rounded-md border transition-colors",
+            "bg-surface border-border text-text-secondary hover:text-text-primary",
+            "disabled:opacity-50 disabled:cursor-not-allowed"
+          )}
+        >
+          {checking ? "Checking…" : "Check for updates"}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 // ── Modal ─────────────────────────────────────────────────────────────────────
 
@@ -221,6 +276,9 @@ export function SettingsModal() {
                 Pick a preset or type any model id your key has access to.
               </p>
             </div>
+
+            {/* Updates */}
+            <UpdateSection />
 
             {/* How to get a key */}
             <div className="bg-surface border border-border rounded-lg px-4 py-3 text-[11px] text-text-muted space-y-1">

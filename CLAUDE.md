@@ -118,6 +118,25 @@ history. Undo looked enabled but recorded nothing for the rest of the session.
 
 ---
 
+### 8. Releases are triggered by the version field, not by pushing
+
+`npm run release:*` bumps `tauri.conf.json`, `package.json` and `Cargo.toml`
+together; pushing to `main` with a changed version tags, builds four installers,
+and publishes. Pushing without a version change just runs tests.
+
+The release workflow is split into gate → build → publish **on purpose**. If every
+matrix job publishes to the release itself, each generates its own `latest.json`
+and they race — the last writer wins and the other platforms disappear from the
+manifest, leaving installers attached to a release whose updater endpoint 404s.
+So: exactly one job writes the manifest, and it runs only after all four builds
+succeed. Never move manifest generation into the matrix.
+
+Auto-update is **consent-first**. Vecto holds unsaved artwork behind `isDirty`,
+so nothing downloads or relaunches unasked, and the restart path writes a
+crash-recovery snapshot first. See [RELEASING.md](RELEASING.md).
+
+---
+
 ## File Map
 
 ```
@@ -140,7 +159,8 @@ src/
 │   ├── themeStore.ts              "dark" | "light" theme (persist); toggles .light/.dark on <html>
 │   ├── contextMenuStore.ts        Right-click menu state (open/x/y/items)
 │   ├── panelStore.ts              Persisted left/right panel widths (vecto-panels)
-│   └── recentStore.ts             Recent file paths (persist, vecto-recent)
+│   ├── recentStore.ts             Recent file paths (persist, vecto-recent)
+│   └── updateStore.ts             Auto-update phase/progress/dismissed versions
 ├── lib/
 │   ├── svgParser.ts               SVG string → VectoDocument
 │   │                              sanitizeSvgDom strips <script>/<foreignObject>/on*/javascript: on import
@@ -167,6 +187,8 @@ src/
 │   ├── fileController.ts         imperative bridge: open / save / saveAs (keys → Toolbar)
 │   ├── aiEdit.ts                  runAiEdit(nodeIds, instruction) — 1:1 in-place edit/recolor stream
 │   ├── recovery.ts                localStorage crash-recovery snapshot (save/load/clear)
+│   ├── updater.ts                 Consent-first auto-update: check/download/install
+│   │                              Writes a recovery snapshot before relaunching
 │   └── utils.ts                   cn(), nodeIcon(), colorToHex()
 ├── components/
 │   ├── canvas/
@@ -203,11 +225,13 @@ src/
 │   ├── ui/ContextMenu.tsx         Global right-click menu (portal); canvas + layer rows
 │   ├── ui/FontPicker.tsx          Font-family dropdown; each option previewed in its own font
 │   ├── ui/RecoveryBanner.tsx      Restore/Discard autosaved doc after crash (top banner)
+│   ├── ui/UpdateBanner.tsx        Update available → download → restart (unsaved-work guard)
 │   └── prompt/PromptBar.tsx       2-row textarea, char counter, expand modal
 │                                  ⊞ button → VariantTray (N thumbnails, click to apply)
 │                                  style preset chips (flat/gradient/3D/line/sticker/minimal)
 ├── hooks/
 │   ├── useUndoBatch.ts           Scoped undo batch; auto-closes on unmount
+│   ├── useUpdateCheck.ts         Silent auto-update probe 4s after launch
 │   ├── useKeyboardShortcuts.ts    Tools + edit/z-order/nudge/clipboard + view + Delete/Esc/⌘Z
 │   ├── useFileDrop.ts             Drag .svg (open) / image (trace) onto the window
 │   └── useAutosave.ts             Snapshot dirty doc to localStorage every 4s (crash recovery)
@@ -357,6 +381,9 @@ npm run tauri build
 
 # Tests (vitest + jsdom) — parser/serializer/path/undo regressions
 npm test
+
+# Cut a release — bumps all three version fields, then push to main
+npm run release:patch   # or release:minor / release:major
 ```
 
 Open the app, click the ⚙ icon in the toolbar (or "Set API key" in the prompt bar),

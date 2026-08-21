@@ -14,6 +14,16 @@ pub fn run() {
         // unscoped capabilities were pure standing blast radius for an app whose
         // whole job is ingesting untrusted SVG.
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            // Updater is desktop-only, so it is registered here rather than in
+            // the unconditional plugin chain above.
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            let _ = app;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             generate_svg_stream,
             generate_svg_variants,
